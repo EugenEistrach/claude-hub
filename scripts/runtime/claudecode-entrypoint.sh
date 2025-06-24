@@ -78,28 +78,14 @@ if [ -n "${GITHUB_TOKEN}" ] && [ -n "${REPO_FULL_NAME}" ]; then
   sudo -u node git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO_FULL_NAME}.git" /workspace/repo >&2
   cd /workspace/repo
 else
-  echo "Skipping repository clone - missing GitHub token or repository name" >&2
-  cd /workspace
+  echo "No repository to clone - creating empty workspace" >&2
+  mkdir -p /workspace/repo
+  chown node:node /workspace/repo
+  cd /workspace/repo
 fi
 
-# Setup MCP configuration if provided - write .mcp.json to project directory
-if [ -n "${MCP_CONFIG_CONTENT}" ]; then
-  echo "Setting up MCP project configuration..." >&2
-  echo "DEBUG: MCP config content length: ${#MCP_CONFIG_CONTENT}" >&2
-  
-  # Write MCP config to the current working directory (project root)
-  echo "${MCP_CONFIG_CONTENT}" > .mcp.json
-  chown node:node .mcp.json
-  
-  echo "DEBUG: MCP config written to $(pwd)/.mcp.json" >&2
-  echo "DEBUG: MCP config file size: $(wc -c < .mcp.json) bytes" >&2
-  echo "DEBUG: MCP config contains discord-agent-comm: $(grep -c 'discord-agent-comm' .mcp.json || echo '0')" >&2
-  echo "DEBUG: Current working directory: $(pwd)" >&2
-  echo "DEBUG: Files in current directory:" >&2
-  ls -la >&2
-else
-  echo "No MCP configuration provided via MCP_CONFIG_CONTENT" >&2
-fi
+# MCP configuration is handled via .claude.json updates only
+# The .mcp.json file should already exist in the project if needed
 
 # Configure git globally first (for all operations, even general commands)
 # Always configure git for the node user since Claude CLI runs as node
@@ -203,15 +189,10 @@ fi
 # Log the command length for debugging
 echo "Command length: ${#COMMAND}" >&2
 
-# Final MCP debug check before running Claude
-echo "DEBUG: Final MCP check before Claude execution:" >&2
+# Check if .mcp.json exists in the project
+echo "DEBUG: Checking for project .mcp.json:" >&2
 echo "DEBUG: Current working directory: $(pwd)" >&2
 echo "DEBUG: .mcp.json exists: $([ -f .mcp.json ] && echo 'YES' || echo 'NO')" >&2
-if [ -f .mcp.json ]; then
-  echo "DEBUG: .mcp.json content preview (first 200 chars):" >&2
-  head -c 200 .mcp.json >&2
-  echo "" >&2
-fi
 
 # Run Claude Code with proper HOME environment
 # If we synced Claude auth to workspace, use workspace as HOME
@@ -229,92 +210,61 @@ else
   echo "DEBUG: Using $CLAUDE_USER_HOME as HOME for Claude CLI (fallback)" >&2
 fi
 
-# Setup Claude Code project state for MCP servers
-if [ -n "${MCP_CONFIG_CONTENT}" ]; then
-  echo "Setting up Claude Code project state for MCP servers..." >&2
+# Setup Claude Code project state for MCP servers if .mcp.json exists
+if [ -f ".mcp.json" ]; then
+  echo "Found .mcp.json in project, updating Claude state..." >&2
   
-  # Extract server names and config from the MCP config using jq
+  # Extract server names from the .mcp.json file
   if command -v jq >/dev/null 2>&1; then
     # Get list of server names from mcpServers object
-    SERVER_NAMES=$(echo "${MCP_CONFIG_CONTENT}" | jq -r '.mcpServers | keys[]' 2>/dev/null || echo "")
+    SERVER_NAMES=$(jq -r '.mcpServers | keys[]' .mcp.json 2>/dev/null || echo "")
     
     if [ -n "$SERVER_NAMES" ]; then
       # Create enabledMcpjsonServers array
       ENABLED_SERVERS_JSON=$(echo "$SERVER_NAMES" | jq -R . | jq -s .)
       
-      # Extract the mcpServers object from our config
-      MCP_SERVERS_OBJECT=$(echo "${MCP_CONFIG_CONTENT}" | jq '.mcpServers' 2>/dev/null || echo "{}")
+      echo "DEBUG: Enabling MCP servers: $SERVER_NAMES" >&2
       
-      echo "DEBUG: Will enable MCP servers: $SERVER_NAMES" >&2
-      echo "DEBUG: MCP servers config: $MCP_SERVERS_OBJECT" >&2
-      
-      # Function to update or create .claude.json file
-      update_claude_json() {
-        local claude_json_path="$1"
-        local current_dir="$2"
-        
-        if [ -f "$claude_json_path" ]; then
-          echo "DEBUG: Updating existing .claude.json at $claude_json_path" >&2
-          # Update existing file - modify the project section for current directory
-          jq --arg project_path "$current_dir" \
-             --argjson enabled_servers "$ENABLED_SERVERS_JSON" \
-             --argjson mcp_servers "$MCP_SERVERS_OBJECT" \
-             '(.projects[$project_path].enabledMcpjsonServers = $enabled_servers) | 
-              (.projects[$project_path].mcpServers = $mcp_servers) | 
-              (.projects[$project_path].disabledMcpjsonServers = [])' \
-             "$claude_json_path" > "$claude_json_path.tmp" && \
-          mv "$claude_json_path.tmp" "$claude_json_path"
-        else
-          echo "DEBUG: Creating new .claude.json at $claude_json_path" >&2
-          # Create new file with minimal structure
-          jq -n --arg project_path "$current_dir" \
-             --argjson enabled_servers "$ENABLED_SERVERS_JSON" \
-             --argjson mcp_servers "$MCP_SERVERS_OBJECT" \
-             '{
-               "firstStartTime": (now | todate),
-               "userID": "",
-               "projects": {
-                 ($project_path): {
-                   "allowedTools": [],
-                   "history": [],
-                   "mcpContextUris": [],
-                   "mcpServers": $mcp_servers,
-                   "enabledMcpjsonServers": $enabled_servers,
-                   "disabledMcpjsonServers": [],
-                   "hasTrustDialogAccepted": false,
-                   "projectOnboardingSeenCount": 0,
-                   "hasClaudeMdExternalIncludesApproved": false,
-                   "hasClaudeMdExternalIncludesWarningShown": false
-                 }
-               },
-               "fallbackAvailableWarningThreshold": 0.5
-             }' > "$claude_json_path"
-        fi
-        
-        chown node:node "$claude_json_path" 2>/dev/null || true
-      }
-      
-      # Update .claude.json in current working directory
+      # Update .claude.json in workspace home directory
+      CLAUDE_JSON_PATH="/workspace/.claude/.claude.json"
       CURRENT_DIR=$(pwd)
-      update_claude_json "$CURRENT_DIR/.claude.json" "$CURRENT_DIR"
       
-      echo "DEBUG: Updated .claude.json with MCP configuration" >&2
-      echo "DEBUG: Current directory: $CURRENT_DIR" >&2
-      if [ -f "$CURRENT_DIR/.claude.json" ]; then
-        echo "DEBUG: .claude.json complete project section:" >&2
-        jq --arg project_path "$CURRENT_DIR" '.projects[$project_path]' "$CURRENT_DIR/.claude.json" >&2 2>/dev/null || echo "Failed to parse .claude.json" >&2
-        
-        # Also check if we can read MCP servers specifically
-        echo "DEBUG: Enabled MCP servers:" >&2
-        jq --arg project_path "$CURRENT_DIR" '.projects[$project_path].enabledMcpjsonServers' "$CURRENT_DIR/.claude.json" >&2 2>/dev/null || echo "No enabledMcpjsonServers found" >&2
+      if [ -f "$CLAUDE_JSON_PATH" ]; then
+        echo "DEBUG: Updating existing .claude.json" >&2
+        # Update existing file - modify the project section for current directory
+        jq --arg project_path "$CURRENT_DIR" \
+           --argjson enabled_servers "$ENABLED_SERVERS_JSON" \
+           '(.projects[$project_path].enabledMcpjsonServers = $enabled_servers) | 
+            (.projects[$project_path].disabledMcpjsonServers = [])' \
+           "$CLAUDE_JSON_PATH" > "$CLAUDE_JSON_PATH.tmp" && \
+        mv "$CLAUDE_JSON_PATH.tmp" "$CLAUDE_JSON_PATH"
+      else
+        echo "DEBUG: Creating new .claude.json" >&2
+        mkdir -p "$(dirname "$CLAUDE_JSON_PATH")"
+        # Create minimal file structure
+        jq -n --arg project_path "$CURRENT_DIR" \
+           --argjson enabled_servers "$ENABLED_SERVERS_JSON" \
+           '{
+             "projects": {
+               ($project_path): {
+                 "enabledMcpjsonServers": $enabled_servers,
+                 "disabledMcpjsonServers": []
+               }
+             }
+           }' > "$CLAUDE_JSON_PATH"
       fi
       
+      chown -R node:node "$(dirname "$CLAUDE_JSON_PATH")" 2>/dev/null || true
+      
+      echo "DEBUG: MCP servers enabled in .claude.json" >&2
     else
-      echo "WARNING: Could not extract server names from MCP config" >&2
+      echo "WARNING: No MCP servers found in .mcp.json" >&2
     fi
   else
-    echo "WARNING: jq not available, cannot setup MCP project state automatically" >&2
+    echo "WARNING: jq not available, cannot setup MCP state automatically" >&2
   fi
+else
+  echo "No .mcp.json found in project directory" >&2
 fi
 
 if [ "${OUTPUT_FORMAT}" = "stream-json" ]; then

@@ -488,6 +488,7 @@ function createGeneralPrompt({ command }: { command: string }): string {
 
 **Context:**
 - Running in: General command mode
+- **Current Directory: You are in /workspace/repo**
 - You have full system access including Git and GitHub CLI
 
 **Available Tools & Authentication:**
