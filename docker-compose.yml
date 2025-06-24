@@ -7,6 +7,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.claude-hub:/home/node/.claude
+      - ./.mcp.json.template:/app/.mcp.json.template:ro
     environment:
       - NODE_ENV=production
       - PORT=${PORT:-3002}
@@ -35,6 +36,16 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
       - CLAUDE_WEBHOOK_SECRET=${CLAUDE_WEBHOOK_SECRET}
+      # Discord Integration
+      - DISCORD_APPLICATION_ID=${DISCORD_APPLICATION_ID}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY}
+      - DISCORD_AUTHORIZED_USERS=${DISCORD_AUTHORIZED_USERS}
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+      # Vercel Integration
+      - VERCEL_TOKEN=${VERCEL_TOKEN}
+      # Claude API Security
+      - CLAUDE_API_SECRET=${CLAUDE_API_SECRET}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3002}/health"]

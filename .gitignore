@@ -83,8 +83,14 @@ service-account.json
 claude-config/
 claude-config*
 
+# MCP processed configuration (generated from template)
+.mcp.json.processed
+
 # Docker secrets
 secrets/
+
+# Docker overrides (local development)
+docker-compose.override.yml
 
 
 # Temporary and backup files

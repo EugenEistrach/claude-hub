@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import { createLogger } from '../utils/logger';
 import { sanitizeBotMentions } from '../utils/sanitize';
 import secureCredentials from '../utils/secureCredentials';
@@ -30,6 +31,41 @@ if (!BOT_USERNAME) {
 const execFileAsync = promisify(execFile);
 
 /**
+ * Process template string by replacing ${VAR_NAME} with environment variable values
+ */
+function processTemplate(templateContent: string, env: Record<string, string | undefined>): string {
+  return templateContent.replace(/\$\{([^}]+)\}/g, (match, varName) => {
+    const value = env[varName];
+    if (value === undefined) {
+      logger.warn({ varName }, 'Environment variable not found for MCP template substitution');
+      return match; // Keep placeholder if env var not found
+    }
+    return value;
+  });
+}
+
+/**
+ * Generate the prompt that would be sent to Claude (for debugging)
+ */
+export function generateClaudePrompt({
+  repoFullName,
+  issueNumber,
+  command,
+  isPullRequest = false,
+  branchName = null,
+  operationType = 'default'
+}: ClaudeCommandOptions): string {
+  return createPrompt({
+    operationType,
+    repoFullName,
+    issueNumber,
+    branchName,
+    isPullRequest,
+    command
+  });
+}
+
+/**
  * Processes a command using Claude Code CLI
  */
 export async function processCommand({
@@ -53,6 +89,13 @@ export async function processCommand({
     );
 
     const githubToken = secureCredentials.get('GITHUB_TOKEN');
+  const vercelToken = secureCredentials.get('VERCEL_TOKEN') ?? process.env.VERCEL_TOKEN;
+  
+  if (vercelToken) {
+    logger.info('VERCEL_TOKEN is available for Claude container');
+  } else {
+    logger.info('VERCEL_TOKEN is not set - Vercel CLI will not be authenticated');
+  }
 
     // In test mode, skip execution and return a mock response
     // Support both classic (ghp_) and fine-grained (github_pat_) GitHub tokens
@@ -103,10 +146,24 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
     );
 
     // Create unique container name (sanitized to prevent command injection)
-    const sanitizedRepoName = repoFullName.replace(/[^a-zA-Z0-9\-_]/g, '-');
+    const sanitizedRepoName = repoFullName
+      ? repoFullName.replace(/[^a-zA-Z0-9\-_]/g, '-')
+      : 'general';
     const containerName = `claude-${sanitizedRepoName}-${Date.now()}`;
 
     // Create the full prompt with context and instructions based on operation type
+    logger.info(
+      {
+        operationType,
+        repoFullName,
+        issueNumber,
+        branchName,
+        isPullRequest,
+        commandLength: command.length
+      },
+      'Creating prompt with parameters'
+    );
+
     const fullPrompt = createPrompt({
       operationType,
       repoFullName,
@@ -124,7 +181,8 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
       branchName,
       operationType,
       fullPrompt,
-      githubToken
+      githubToken,
+      vercelToken
     });
 
     // Run the container
@@ -216,12 +274,15 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
         dockerArgs: sanitizedArgs,
         dockerImageName,
         githubToken,
-        repoFullName,
-        issueNumber
+        repoFullName: repoFullName ?? 'general',
+        issueNumber: issueNumber ?? null
       });
     }
   } catch (error) {
-    return handleGeneralError(error, { repoFullName, issueNumber });
+    return handleGeneralError(error, {
+      repoFullName: repoFullName ?? 'general',
+      issueNumber: issueNumber ?? null
+    });
   }
 }
 
@@ -245,18 +306,98 @@ function createPrompt({
   command
 }: {
   operationType: OperationType;
-  repoFullName: string;
-  issueNumber: number | null;
-  branchName: string | null;
-  isPullRequest: boolean;
+  repoFullName?: string;
+  issueNumber?: number | null;
+  branchName?: string | null;
+  isPullRequest?: boolean;
   command: string;
 }): string {
+  // Determine prompt template based on context
   if (operationType === 'auto-tagging') {
-    return `You are Claude, an AI assistant analyzing a GitHub issue for automatic label assignment.
+    return createGitHubAutoTaggingPrompt({ repoFullName, issueNumber, command });
+  } else if (repoFullName && issueNumber === 0 && !isPullRequest) {
+    // Discord command with repository context (issue #0 is a special marker)
+    logger.info({ repoFullName, issueNumber, isPullRequest }, 'Using Discord repository prompt');
+    return createDiscordRepositoryPrompt({ repoFullName, command });
+  } else if (repoFullName && issueNumber !== null && issueNumber !== undefined) {
+    logger.info({ repoFullName, issueNumber, isPullRequest }, 'Using GitHub context prompt');
+    return createGitHubContextPrompt({
+      repoFullName,
+      issueNumber,
+      branchName,
+      isPullRequest,
+      command
+    });
+  } else {
+    logger.info('Using general prompt (no repository context)');
+    return createGeneralPrompt({ command });
+  }
+}
+
+/**
+ * Create Discord-specific prompt with repository context
+ */
+function createDiscordRepositoryPrompt({
+  repoFullName,
+  command
+}: {
+  repoFullName: string;
+  command: string;
+}): string {
+  return `You are Claude, an AI assistant helping with a repository task from Discord.
 
 **Context:**
 - Repository: ${repoFullName}
-- Issue Number: #${issueNumber}
+- Source: Discord command
+- **Current Directory: The repository ${repoFullName} has been cloned and you are currently in /workspace/repo**
+- Running in: Unattended mode
+
+**Available Tools & Authentication:**
+- **Vercel CLI**: Fully authenticated - can deploy, manage projects, domains, logs
+- **GitHub CLI**: Full access - repos, issues, PRs, API operations
+- **Git**: Version control, branching, commits, push/pull
+- **File System**: Read, Write, Edit all repository files
+- **MCP Tools**:
+  - \`context7\`: For recent docs (e.g., Tailwind 4, Claude Code)
+  - \`discord-agent-comm\`: Send status updates (use sparingly, don't spam)
+
+**Instructions:**
+1. **Validate before assuming**: Test tool availability (e.g., \`vercel --version\`) before claiming limitations
+2. Repository is cloned and ready in /workspace/repo
+3. Complete tasks fully - create branches, commit, push changes
+4. For deployments: Use \`vercel\` or \`vercel --prod\` as appropriate
+5. **Progress Updates**: Use \`discord-agent-comm\` for status on long tasks or when stuck
+6. **IMPORTANT - Response Format:**
+   - Return clean, properly formatted text/markdown
+   - Do NOT escape special characters or newlines
+   - Your response will be sent directly to Discord
+   - **Keep your final response under 1000 characters** (aim for concise summaries)
+   - For longer content: provide a brief summary and mention "Details saved to [filename]"
+   - Focus on what was accomplished, not how
+
+**User Request:**
+${command}
+
+Please complete this task fully and autonomously.`;
+}
+
+/**
+ * Create GitHub auto-tagging prompt
+ */
+function createGitHubAutoTaggingPrompt({
+  repoFullName,
+  issueNumber,
+  command
+}: {
+  repoFullName?: string;
+  issueNumber?: number | null;
+  command: string;
+}): string {
+  return `You are Claude, an AI assistant analyzing a GitHub issue for automatic label assignment.
+
+**Context:**
+- Repository: ${repoFullName ?? 'Unknown'}
+- Issue Number: #${issueNumber ?? 'Unknown'}
 - Operation: Auto-tagging (Read-only + Label assignment)
 
 **Available Tools:**
@@ -280,28 +421,48 @@ Analyze the issue and apply appropriate labels using GitHub CLI commands. Use th
 ${command}
 
 Complete the auto-tagging task using only the minimal required tools.`;
-  } else {
-    return `You are ${process.env.BOT_USERNAME}, an AI assistant responding to a GitHub ${isPullRequest ? 'pull request' : 'issue'}.
+}
+
+/**
+ * Create GitHub-specific prompt with repository context
+ */
+function createGitHubContextPrompt({
+  repoFullName,
+  issueNumber,
+  branchName,
+  isPullRequest,
+  command
+}: {
+  repoFullName: string;
+  issueNumber: number | null;
+  branchName?: string | null;
+  isPullRequest?: boolean;
+  command: string;
+}): string {
+  return `You are ${process.env.BOT_USERNAME}, an AI assistant responding to a GitHub ${isPullRequest ? 'pull request' : 'issue'}.
 
 **Context:**
 - Repository: ${repoFullName}
 - ${isPullRequest ? 'Pull Request' : 'Issue'} Number: #${issueNumber}
 - Current Branch: ${branchName ?? 'main'}
 - Running in: Unattended mode
+- **Current Directory: The repository has been cloned and you are currently in /workspace/repo**
 
-**Important Instructions:**
-1. You have full GitHub CLI access via the 'gh' command
-2. When writing code:
-   - Always create a feature branch for new work
-   - Make commits with descriptive messages
-   - Push your work to the remote repository
-   - Run all tests and ensure they pass
-   - Fix any linting or type errors
-   - Create a pull request if appropriate
-3. Iterate until the task is complete - don't stop at partial solutions
-4. Always check in your work by pushing to the remote before finishing
-5. Use 'gh issue comment' or 'gh pr comment' to provide updates on your progress
-6. If you encounter errors, debug and fix them before completing
+**Available Tools & Authentication:**
+- **Vercel CLI**: Fully authenticated - deploy (\`vercel\`/\`vercel --prod\`), manage projects/domains/logs
+- **GitHub CLI**: Full access - repos, issues, PRs, API operations
+- **Git**: Version control, branching, commits, push/pull
+- **MCP Tools**:
+  - \`context7\`: For recent docs (e.g., Tailwind 4, Claude Code)
+  - \`discord-agent-comm\`: Send status updates (use sparingly, don't spam)
+
+**Instructions:**
+1. **Validate before assuming**: Test commands (e.g., \`vercel --version\`, \`gh --version\`) instead of assuming limitations
+2. Repository cloned at /workspace/repo - create feature branches for work
+3. Complete tasks fully: code > test > commit > push > PR if needed
+4. Use \`gh issue comment\`/\`gh pr comment\` for progress updates
+5. Debug and fix errors before completing - don't stop at partial solutions
+6. **Progress & Help**: Use \`discord-agent-comm\` when stuck or for major milestones (sparingly)
 7. **IMPORTANT - Markdown Formatting:**
    - When your response contains markdown (like headers, lists, code blocks), return it as properly formatted markdown
    - Do NOT escape or encode special characters like newlines (\\n) or quotes
@@ -317,7 +478,43 @@ Complete the auto-tagging task using only the minimal required tools.`;
 ${command}
 
 Please complete this task fully and autonomously.`;
-  }
+}
+
+/**
+ * Create general prompt without repository context
+ */
+function createGeneralPrompt({ command }: { command: string }): string {
+  return `You are Claude, an AI assistant helping with general tasks.
+
+**Context:**
+- Running in: General command mode
+- You have full system access including Git and GitHub CLI
+
+**Available Tools & Authentication:**
+- **Vercel CLI**: Fully authenticated - deploy (\`vercel\`/\`vercel --prod\`), list, domains, link, logs
+- **GitHub CLI**: Full access - create repos (\`gh repo create\`), issues, PRs, clone, manage
+- **Git**: Version control, branching, commits, push/pull
+- **File System**: Create, edit, manage files and directories
+- **Shell**: Execute any bash commands needed
+- **MCP Tools**:
+  - \`context7\`: For recent docs (e.g., Tailwind 4, Claude Code)
+  - \`discord-agent-comm\`: Send status updates (use sparingly, don't spam)
+
+**Instructions:**
+1. **Validate before assuming**: Test tool availability (e.g., \`vercel --version\`, \`gh --version\`) instead of claiming limitations
+2. You CAN create repos, push code, deploy projects - don't assume restrictions
+3. Complete workflow: init git > commit > create GitHub repo > push > deploy if needed
+4. Always complete tasks fully
+5. **Progress Updates**: Use \`discord-agent-comm\` for status on long tasks or when stuck
+6. **Discord Response Format:**
+   - **Keep your final response under 1000 characters** (be concise!)
+   - Focus on what was accomplished, not detailed steps
+   - For code/logs: mention "Details saved to [filename]" instead of including them
+
+**User Request:**
+${command}
+
+Please complete this task fully and autonomously.`;
 }
 
 /**
@@ -330,18 +527,20 @@ function createEnvironmentVars({
   branchName,
   operationType,
   fullPrompt,
-  githubToken
+  githubToken,
+  vercelToken
 }: {
-  repoFullName: string;
-  issueNumber: number | null;
-  isPullRequest: boolean;
-  branchName: string | null;
+  repoFullName?: string;
+  issueNumber?: number | null;
+  isPullRequest?: boolean;
+  branchName?: string | null;
   operationType: OperationType;
   fullPrompt: string;
   githubToken: string;
+  vercelToken?: string;
 }): ClaudeEnvironmentVars {
   return {
-    REPO_FULL_NAME: repoFullName,
+    REPO_FULL_NAME: repoFullName ?? '',
     ISSUE_NUMBER: issueNumber?.toString() ?? '',
     IS_PULL_REQUEST: isPullRequest ? 'true' : 'false',
     BRANCH_NAME: branchName ?? '',
@@ -350,7 +549,8 @@ function createEnvironmentVars({
     GITHUB_TOKEN: githubToken,
     ANTHROPIC_API_KEY: secureCredentials.get('ANTHROPIC_API_KEY') ?? '',
     BOT_USERNAME: process.env.BOT_USERNAME,
-    BOT_EMAIL: process.env.BOT_EMAIL
+    BOT_EMAIL: process.env.BOT_EMAIL,
+    VERCEL_TOKEN: vercelToken ?? ''
   };
 }
 
@@ -382,11 +582,49 @@ function buildDockerArgs({
   const hostAuthDir = process.env.CLAUDE_AUTH_HOST_DIR;
   if (hostAuthDir) {
     // Resolve relative paths to absolute paths for Docker volume mounting
-    const path = require('path');
     const absoluteAuthDir = path.isAbsolute(hostAuthDir)
       ? hostAuthDir
       : path.resolve(process.cwd(), hostAuthDir);
     dockerArgs.push('-v', `${absoluteAuthDir}:/home/node/.claude`);
+  }
+
+  // Prepare MCP configuration for copying into container
+  // Template file is mounted directly into the webhook container at /app/.mcp.json.template
+  const mcpTemplatePath = path.resolve('/app', '.mcp.json.template');
+  const mcpConfigPath = path.resolve('/app', '.mcp.json');
+  
+  logger.info({ 
+    cwd: process.cwd(),
+    mcpTemplatePath,
+    mcpConfigPath,
+    templateExists: fs.existsSync(mcpTemplatePath),
+    configExists: fs.existsSync(mcpConfigPath)
+  }, 'Checking for MCP configuration files');
+  
+  let mcpConfigContent = '';
+  
+  // Process MCP template if it exists
+  if (fs.existsSync(mcpTemplatePath)) {
+    logger.info('Found MCP template, processing with environment variables');
+    const templateContent = fs.readFileSync(mcpTemplatePath, 'utf8');
+    mcpConfigContent = processTemplate(templateContent, process.env);
+    logger.info({ 
+      templateLength: templateContent.length,
+      processedLength: mcpConfigContent.length,
+      hasDiscordToken: mcpConfigContent.includes('DISCORD_BOT_TOKEN'),
+      hasGitHubToken: mcpConfigContent.includes('GITHUB_TOKEN')
+    }, 'MCP template processed successfully');
+  } else if (fs.existsSync(mcpConfigPath)) {
+    logger.info('Found static MCP config file');
+    mcpConfigContent = fs.readFileSync(mcpConfigPath, 'utf8');
+  } else {
+    logger.info('No MCP configuration found (neither .mcp.json.template nor .mcp.json)');
+  }
+
+  // Store MCP config content in environment variable for entrypoint to handle
+  if (mcpConfigContent) {
+    envVars.MCP_CONFIG_CONTENT = mcpConfigContent;
+    logger.info({ configSize: mcpConfigContent.length }, 'MCP configuration will be copied by entrypoint script');
   }
 
   // Add environment variables as separate arguments

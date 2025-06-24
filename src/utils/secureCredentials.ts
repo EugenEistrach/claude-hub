@@ -42,6 +42,18 @@ class SecureCredentials {
       CLAUDE_WEBHOOK_SECRET: {
         file: process.env['CLAUDE_WEBHOOK_SECRET_FILE'] ?? '/run/secrets/claude_webhook_secret',
         env: 'CLAUDE_WEBHOOK_SECRET'
+      },
+      VERCEL_TOKEN: {
+        file: process.env['VERCEL_TOKEN_FILE'] ?? '/run/secrets/vercel_token',
+        env: 'VERCEL_TOKEN'
+      },
+      DISCORD_BOT_TOKEN: {
+        file: process.env['DISCORD_BOT_TOKEN_FILE'] ?? '/run/secrets/discord_bot_token',
+        env: 'DISCORD_BOT_TOKEN'
+      },
+      DISCORD_PUBLIC_KEY: {
+        file: process.env['DISCORD_PUBLIC_KEY_FILE'] ?? '/run/secrets/discord_public_key',
+        env: 'DISCORD_PUBLIC_KEY'
       }
     };
 

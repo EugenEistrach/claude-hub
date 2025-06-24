@@ -1,8 +1,8 @@
 export type OperationType = 'auto-tagging' | 'pr-review' | 'manual-pr-review' | 'default';
 
 export interface ClaudeCommandOptions {
-  repoFullName: string;
-  issueNumber: number | null;
+  repoFullName?: string; // Optional - for general commands without repository context
+  issueNumber?: number | null;
   command: string;
   isPullRequest?: boolean;
   branchName?: string | null;
@@ -43,6 +43,8 @@ export interface ClaudeEnvironmentVars {
   ANTHROPIC_API_KEY: string;
   BOT_USERNAME?: string;
   BOT_EMAIL?: string;
+  VERCEL_TOKEN?: string;
+  MCP_CONFIG_CONTENT?: string;
 }
 
 export interface DockerExecutionOptions {

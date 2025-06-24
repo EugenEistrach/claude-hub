@@ -5,7 +5,11 @@ import rateLimit from 'express-rate-limit';
 import { createLogger } from './utils/logger';
 import { StartupMetrics } from './utils/startup-metrics';
 import githubRoutes from './routes/github';
+import discordRoutes from './routes/discord';
 import webhookRoutes from './routes/webhooks';
+import claudeRoutes from './routes/claude';
+import { promptStorage } from './services/promptStorage';
+import { responseStorage } from './services/responseStorage';
 import type { WebhookRequest, HealthCheckResponse, ErrorResponse } from './types/express';
 import { execSync } from 'child_process';
 
@@ -89,7 +93,7 @@ app.use(startupMetrics.metricsMiddleware());
 
 app.use(
   bodyParser.json({
-    verify: (req: WebhookRequest, _res, buf) => {
+    verify: (req: any, _res, buf) => {
       // Store the raw body buffer for webhook signature verification
       req.rawBody = buf;
     }
@@ -100,9 +104,61 @@ startupMetrics.recordMilestone('middleware_configured', 'Express middleware conf
 
 // Routes
 app.use('/api/webhooks/github', githubRoutes); // Legacy endpoint
+app.use('/api/webhooks/discord', discordRoutes); // Discord integration endpoint
 app.use('/api/webhooks', webhookRoutes); // New modular webhook endpoint
+app.use('/api/claude', claudeRoutes); // Claude agent API endpoint
 
 startupMetrics.recordMilestone('routes_configured', 'API routes configured');
+
+// Endpoint to serve full prompts
+app.get('/prompts/:id', (req: express.Request, res: express.Response): void => {
+  const promptId = req.params.id;
+  const promptData = promptStorage.get(promptId);
+
+  appLogger.info({ promptId, found: !!promptData }, 'Prompt request');
+
+  if (!promptData) {
+    res
+      .status(404)
+      .type('text/plain')
+      .send('Prompt not found or expired (prompts are kept for 30 minutes)');
+    return;
+  }
+
+  // Set headers for plain text display
+  res.set({
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Operation-ID': promptData.operationId,
+    'X-Timestamp': new Date(promptData.timestamp).toISOString()
+  });
+
+  res.send(promptData.prompt);
+});
+
+// Endpoint to serve full responses
+app.get('/responses/:id', (req: express.Request, res: express.Response): void => {
+  const responseId = req.params.id;
+  const responseData = responseStorage.get(responseId);
+
+  appLogger.info({ responseId, found: !!responseData }, 'Response request');
+
+  if (!responseData) {
+    res
+      .status(404)
+      .type('text/plain')
+      .send('Response not found or expired (responses are kept for 30 minutes)');
+    return;
+  }
+
+  // Set headers for plain text display
+  res.set({
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Operation-ID': responseData.operationId,
+    'X-Timestamp': new Date(responseData.timestamp).toISOString()
+  });
+
+  res.send(responseData.content);
+});
 
 // Health check endpoint
 app.get('/health', (req: WebhookRequest, res: express.Response<HealthCheckResponse>) => {

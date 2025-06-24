@@ -62,6 +62,16 @@ else
   echo "No GitHub token provided, skipping GitHub authentication"
 fi
 
+# Configure Vercel authentication
+if [ -n "${VERCEL_TOKEN}" ]; then
+  echo "Setting up Vercel authentication..." >&2
+  export VERCEL_TOKEN="${VERCEL_TOKEN}"
+  # Vercel CLI will automatically use VERCEL_TOKEN environment variable
+  echo "Vercel authentication configured via VERCEL_TOKEN" >&2
+else
+  echo "No Vercel token provided, skipping Vercel authentication" >&2
+fi
+
 # Clone the repository as node user
 if [ -n "${GITHUB_TOKEN}" ] && [ -n "${REPO_FULL_NAME}" ]; then
   echo "Cloning repository ${REPO_FULL_NAME}..." >&2
@@ -72,22 +82,58 @@ else
   cd /workspace
 fi
 
-# Checkout the correct branch based on operation type
-if [ "${OPERATION_TYPE}" = "auto-tagging" ]; then
-    # Auto-tagging always uses main branch (doesn't need specific branches)
-    echo "Using main branch for auto-tagging" >&2
-    sudo -u node git checkout main >&2 || sudo -u node git checkout master >&2
-elif [ "${IS_PULL_REQUEST}" = "true" ] && [ -n "${BRANCH_NAME}" ]; then
-    echo "Checking out PR branch: ${BRANCH_NAME}" >&2
-    sudo -u node git checkout "${BRANCH_NAME}" >&2
+# Setup MCP configuration if provided - write .mcp.json to project directory
+if [ -n "${MCP_CONFIG_CONTENT}" ]; then
+  echo "Setting up MCP project configuration..." >&2
+  echo "DEBUG: MCP config content length: ${#MCP_CONFIG_CONTENT}" >&2
+  
+  # Write MCP config to the current working directory (project root)
+  echo "${MCP_CONFIG_CONTENT}" > .mcp.json
+  chown node:node .mcp.json
+  
+  echo "DEBUG: MCP config written to $(pwd)/.mcp.json" >&2
+  echo "DEBUG: MCP config file size: $(wc -c < .mcp.json) bytes" >&2
+  echo "DEBUG: MCP config contains discord-agent-comm: $(grep -c 'discord-agent-comm' .mcp.json || echo '0')" >&2
+  echo "DEBUG: Current working directory: $(pwd)" >&2
+  echo "DEBUG: Files in current directory:" >&2
+  ls -la >&2
 else
-    echo "Using main branch" >&2
-    sudo -u node git checkout main >&2 || sudo -u node git checkout master >&2
+  echo "No MCP configuration provided via MCP_CONFIG_CONTENT" >&2
 fi
 
-# Configure git for commits using environment variables (with defaults)
+# Configure git globally first (for all operations, even general commands)
+# Always configure git for the node user since Claude CLI runs as node
+echo "DEBUG: Configuring git for node user (BOT_EMAIL=${BOT_EMAIL}, BOT_USERNAME=${BOT_USERNAME})" >&2
 sudo -u node git config --global user.email "${BOT_EMAIL:-claude@example.com}"
-sudo -u node git config --global user.name "${BOT_USERNAME:-ClaudeBot}"
+sudo -u node git config --global user.name "${BOT_USERNAME#@}"  # Strip @ prefix for git config
+
+# Also configure for root if running as root (for any git operations in the script itself)
+if [ "$(id -u)" = "0" ]; then
+  git config --global user.email "${BOT_EMAIL:-claude@example.com}"
+  git config --global user.name "${BOT_USERNAME#@}"
+  echo "DEBUG: Also configured git for root user" >&2
+fi
+
+# Verify git config was set
+echo "DEBUG: Git config for node user:" >&2
+sudo -u node git config --global --list 2>&1 | grep -E "user\.(name|email)" >&2 || echo "No git config found for node user" >&2
+
+# Checkout the correct branch based on operation type (only if we have a repository)
+if [ -n "${REPO_FULL_NAME}" ] && [ -d ".git" ]; then
+    if [ "${OPERATION_TYPE}" = "auto-tagging" ]; then
+        # Auto-tagging always uses main branch (doesn't need specific branches)
+        echo "Using main branch for auto-tagging" >&2
+        sudo -u node git checkout main >&2 || sudo -u node git checkout master >&2
+    elif [ "${IS_PULL_REQUEST}" = "true" ] && [ -n "${BRANCH_NAME}" ]; then
+        echo "Checking out PR branch: ${BRANCH_NAME}" >&2
+        sudo -u node git checkout "${BRANCH_NAME}" >&2
+    else
+        echo "Using main branch" >&2
+        sudo -u node git checkout main >&2 || sudo -u node git checkout master >&2
+    fi
+else
+    echo "No repository context - skipping git checkout operations" >&2
+fi
 
 # Configure Claude authentication
 # Support both API key and interactive auth methods
@@ -130,6 +176,24 @@ else
     echo "Running Claude Code with full tool access..." >&2
 fi
 
+# Add MCP tools to allowed tools if MCP servers are configured
+if [ -n "${MCP_CONFIG_CONTENT}" ] && command -v jq >/dev/null 2>&1; then
+    echo "Extracting MCP server names for allowed tools..." >&2
+    MCP_SERVER_NAMES=$(echo "${MCP_CONFIG_CONTENT}" | jq -r '.mcpServers | keys[]' 2>/dev/null || echo "")
+    
+    if [ -n "$MCP_SERVER_NAMES" ]; then
+        # Convert server names to comma-separated mcp__ format
+        MCP_TOOLS=$(echo "$MCP_SERVER_NAMES" | sed 's/^/mcp__/' | tr '\n' ',' | sed 's/,$//')
+        echo "DEBUG: Formatted MCP tools: ${MCP_TOOLS}" >&2
+        
+        # Append MCP tools to ALLOWED_TOOLS
+        ALLOWED_TOOLS="${ALLOWED_TOOLS},${MCP_TOOLS}"
+        echo "Added MCP tools to allowed list: ${MCP_TOOLS}" >&2
+    else
+        echo "WARNING: No MCP server names found to add to allowed tools" >&2
+    fi
+fi
+
 # Check if command exists
 if [ -z "${COMMAND}" ]; then
   echo "ERROR: No command provided. COMMAND environment variable is empty." | tee -a "${RESPONSE_FILE}" >&2
@@ -139,14 +203,118 @@ fi
 # Log the command length for debugging
 echo "Command length: ${#COMMAND}" >&2
 
+# Final MCP debug check before running Claude
+echo "DEBUG: Final MCP check before Claude execution:" >&2
+echo "DEBUG: Current working directory: $(pwd)" >&2
+echo "DEBUG: .mcp.json exists: $([ -f .mcp.json ] && echo 'YES' || echo 'NO')" >&2
+if [ -f .mcp.json ]; then
+  echo "DEBUG: .mcp.json content preview (first 200 chars):" >&2
+  head -c 200 .mcp.json >&2
+  echo "" >&2
+fi
+
 # Run Claude Code with proper HOME environment
 # If we synced Claude auth to workspace, use workspace as HOME
 if [ -f "/workspace/.claude/.credentials.json" ]; then
   CLAUDE_USER_HOME="/workspace"
   echo "DEBUG: Using /workspace as HOME for Claude CLI (synced auth)" >&2
+  # Also ensure git config exists in workspace home
+  if [ ! -f "/workspace/.gitconfig" ]; then
+    echo "DEBUG: Copying git config to workspace home" >&2
+    sudo -u node cp /home/node/.gitconfig /workspace/.gitconfig 2>/dev/null || true
+    sudo chown node:node /workspace/.gitconfig 2>/dev/null || true
+  fi
 else
   CLAUDE_USER_HOME="${CLAUDE_HOME:-/home/node}"
   echo "DEBUG: Using $CLAUDE_USER_HOME as HOME for Claude CLI (fallback)" >&2
+fi
+
+# Setup Claude Code project state for MCP servers
+if [ -n "${MCP_CONFIG_CONTENT}" ]; then
+  echo "Setting up Claude Code project state for MCP servers..." >&2
+  
+  # Extract server names and config from the MCP config using jq
+  if command -v jq >/dev/null 2>&1; then
+    # Get list of server names from mcpServers object
+    SERVER_NAMES=$(echo "${MCP_CONFIG_CONTENT}" | jq -r '.mcpServers | keys[]' 2>/dev/null || echo "")
+    
+    if [ -n "$SERVER_NAMES" ]; then
+      # Create enabledMcpjsonServers array
+      ENABLED_SERVERS_JSON=$(echo "$SERVER_NAMES" | jq -R . | jq -s .)
+      
+      # Extract the mcpServers object from our config
+      MCP_SERVERS_OBJECT=$(echo "${MCP_CONFIG_CONTENT}" | jq '.mcpServers' 2>/dev/null || echo "{}")
+      
+      echo "DEBUG: Will enable MCP servers: $SERVER_NAMES" >&2
+      echo "DEBUG: MCP servers config: $MCP_SERVERS_OBJECT" >&2
+      
+      # Function to update or create .claude.json file
+      update_claude_json() {
+        local claude_json_path="$1"
+        local current_dir="$2"
+        
+        if [ -f "$claude_json_path" ]; then
+          echo "DEBUG: Updating existing .claude.json at $claude_json_path" >&2
+          # Update existing file - modify the project section for current directory
+          jq --arg project_path "$current_dir" \
+             --argjson enabled_servers "$ENABLED_SERVERS_JSON" \
+             --argjson mcp_servers "$MCP_SERVERS_OBJECT" \
+             '(.projects[$project_path].enabledMcpjsonServers = $enabled_servers) | 
+              (.projects[$project_path].mcpServers = $mcp_servers) | 
+              (.projects[$project_path].disabledMcpjsonServers = [])' \
+             "$claude_json_path" > "$claude_json_path.tmp" && \
+          mv "$claude_json_path.tmp" "$claude_json_path"
+        else
+          echo "DEBUG: Creating new .claude.json at $claude_json_path" >&2
+          # Create new file with minimal structure
+          jq -n --arg project_path "$current_dir" \
+             --argjson enabled_servers "$ENABLED_SERVERS_JSON" \
+             --argjson mcp_servers "$MCP_SERVERS_OBJECT" \
+             '{
+               "firstStartTime": (now | todate),
+               "userID": "",
+               "projects": {
+                 ($project_path): {
+                   "allowedTools": [],
+                   "history": [],
+                   "mcpContextUris": [],
+                   "mcpServers": $mcp_servers,
+                   "enabledMcpjsonServers": $enabled_servers,
+                   "disabledMcpjsonServers": [],
+                   "hasTrustDialogAccepted": false,
+                   "projectOnboardingSeenCount": 0,
+                   "hasClaudeMdExternalIncludesApproved": false,
+                   "hasClaudeMdExternalIncludesWarningShown": false
+                 }
+               },
+               "fallbackAvailableWarningThreshold": 0.5
+             }' > "$claude_json_path"
+        fi
+        
+        chown node:node "$claude_json_path" 2>/dev/null || true
+      }
+      
+      # Update .claude.json in current working directory
+      CURRENT_DIR=$(pwd)
+      update_claude_json "$CURRENT_DIR/.claude.json" "$CURRENT_DIR"
+      
+      echo "DEBUG: Updated .claude.json with MCP configuration" >&2
+      echo "DEBUG: Current directory: $CURRENT_DIR" >&2
+      if [ -f "$CURRENT_DIR/.claude.json" ]; then
+        echo "DEBUG: .claude.json complete project section:" >&2
+        jq --arg project_path "$CURRENT_DIR" '.projects[$project_path]' "$CURRENT_DIR/.claude.json" >&2 2>/dev/null || echo "Failed to parse .claude.json" >&2
+        
+        # Also check if we can read MCP servers specifically
+        echo "DEBUG: Enabled MCP servers:" >&2
+        jq --arg project_path "$CURRENT_DIR" '.projects[$project_path].enabledMcpjsonServers' "$CURRENT_DIR/.claude.json" >&2 2>/dev/null || echo "No enabledMcpjsonServers found" >&2
+      fi
+      
+    else
+      echo "WARNING: Could not extract server names from MCP config" >&2
+    fi
+  else
+    echo "WARNING: jq not available, cannot setup MCP project state automatically" >&2
+  fi
 fi
 
 if [ "${OUTPUT_FORMAT}" = "stream-json" ]; then
@@ -157,6 +325,7 @@ if [ "${OUTPUT_FORMAT}" = "stream-json" ]; then
       ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
       GH_TOKEN="${GITHUB_TOKEN}" \
       GITHUB_TOKEN="${GITHUB_TOKEN}" \
+      VERCEL_TOKEN="${VERCEL_TOKEN}" \
       BASH_DEFAULT_TIMEOUT_MS="${BASH_DEFAULT_TIMEOUT_MS}" \
       BASH_MAX_TIMEOUT_MS="${BASH_MAX_TIMEOUT_MS}" \
       /usr/local/share/npm-global/bin/claude \
@@ -165,13 +334,15 @@ if [ "${OUTPUT_FORMAT}" = "stream-json" ]; then
       --verbose \
       --print "${COMMAND}"
 else
-  # Default behavior - write to file
+  
+  # Default behavior - write to file  
   sudo -u node -E env \
       HOME="$CLAUDE_USER_HOME" \
       PATH="/usr/local/bin:/usr/local/share/npm-global/bin:$PATH" \
       ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
       GH_TOKEN="${GITHUB_TOKEN}" \
       GITHUB_TOKEN="${GITHUB_TOKEN}" \
+      VERCEL_TOKEN="${VERCEL_TOKEN}" \
       BASH_DEFAULT_TIMEOUT_MS="${BASH_DEFAULT_TIMEOUT_MS}" \
       BASH_MAX_TIMEOUT_MS="${BASH_MAX_TIMEOUT_MS}" \
       /usr/local/share/npm-global/bin/claude \
@@ -179,6 +350,15 @@ else
       --verbose \
       --print "${COMMAND}" \
       > "${RESPONSE_FILE}" 2>&1
+  
+  # Capture the exit code before it gets lost
+  CLAUDE_EXIT_CODE=$?
+  
+  # If Claude failed, show the error output
+  if [ $CLAUDE_EXIT_CODE -ne 0 ]; then
+    echo "DEBUG: Claude CLI FAILED. Error output:" >&2
+    cat "${RESPONSE_FILE}" >&2
+  fi
 fi
 
 # Check for errors

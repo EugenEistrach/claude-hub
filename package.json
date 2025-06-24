@@ -32,6 +32,8 @@
     "security:fix": "npm audit fix",
     "setup:dev": "husky install",
     "setup:hooks": "husky",
+    "discord:register": "node scripts/setup/register-discord-commands.js",
+    "discord:test": "node scripts/test/test-discord-integration.js",
     "prepare": "husky || true"
   },
   "dependencies": {
@@ -44,6 +46,7 @@
     "express-rate-limit": "^7.5.0",
     "pino": "^9.7.0",
     "pino-pretty": "^13.0.0",
+    "tweetnacl": "^1.0.3",
     "typescript": "^5.8.3",
     "uuid": "^11.1.0"
   },

@@ -16,7 +16,8 @@ RUN apt update && apt install -y less \
   iproute2 \
   dnsutils \
   aggregate \
-  jq
+  jq \
+  curl
 
 # Set up npm global directory
 RUN mkdir -p /usr/local/share/npm-global && \
@@ -40,6 +41,9 @@ ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
 # Install Claude Code  
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install Vercel CLI
+RUN npm install -g vercel
 
 # Switch back to root
 USER root
