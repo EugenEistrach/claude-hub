@@ -90,6 +90,13 @@ That's it! Your bot is ready to use. See the **[complete quickstart guide](./QUI
 - Container isolation with minimal permissions
 - Fine-grained GitHub token scoping
 
+### Session Links & Observability 🔗
+- Direct links to prompts, responses, and traces in all webhook responses
+- Visual trace viewer for debugging Claude interactions (when claude-trace enabled)
+- Session artifact storage and retrieval via REST API
+- Discord embeds with clickable session detail links
+- Automatic file existence checking for available artifacts
+
 
 ## Bot Account Setup
 

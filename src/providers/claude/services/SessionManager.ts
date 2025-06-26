@@ -182,7 +182,7 @@ export class SessionManager {
    */
   async queueSession(session: ClaudeSession): Promise<void> {
     // If session has no dependencies, start immediately
-    if (!session.dependencies || session.dependencies.length === 0) {
+    if (session.dependencies.length === 0) {
       await this.startSession(session);
       return;
     }

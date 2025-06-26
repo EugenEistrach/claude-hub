@@ -109,6 +109,13 @@ USER root
 
 WORKDIR /app
 
+# Create shared directory for claude container communication
+# Make it accessible to both root and claudeuser
+RUN mkdir -p /tmp/claude-shared && chmod 777 /tmp/claude-shared
+
+# Create test directory for direct mounting to claude container
+RUN mkdir -p /app/test-the-fucking-issue && chmod 777 /app/test-the-fucking-issue
+
 # Copy production dependencies from prod-deps stage
 COPY --from=prod-deps /app/node_modules ./node_modules
 

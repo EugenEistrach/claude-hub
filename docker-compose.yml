@@ -7,7 +7,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.claude-hub:/home/node/.claude
-      - ./.mcp.json.template:/app/.mcp.json.template:ro
+      - ./sessions:/app/sessions
     environment:
       - NODE_ENV=production
       - PORT=${PORT:-3002}
@@ -21,6 +21,7 @@ services:
       - CLAUDE_USE_CONTAINERS=1
       - CLAUDE_CONTAINER_IMAGE=claudecode:latest
       - CLAUDE_AUTH_HOST_DIR=${CLAUDE_AUTH_HOST_DIR:-${HOME}/.claude-hub}
+      - HOST_SESSIONS_DIR=${PWD}/sessions
       - DISABLE_LOG_REDACTION=true
       # Claude Code timeout settings for unattended mode
       - BASH_DEFAULT_TIMEOUT_MS=${BASH_DEFAULT_TIMEOUT_MS:-600000}  # 10 minutes default
@@ -46,6 +47,9 @@ services:
       - VERCEL_TOKEN=${VERCEL_TOKEN}
       # Claude API Security
       - CLAUDE_API_SECRET=${CLAUDE_API_SECRET}
+      # Claude Trace Integration (always enabled)
+      - CLAUDE_SESSIONS_RETENTION_DAYS=${CLAUDE_SESSIONS_RETENTION_DAYS:-7}
+      - CLAUDE_SESSIONS_VOLUME_PATH=/app/sessions
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3002}/health"]
@@ -53,3 +57,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+# volumes:
+#   claude-sessions:  # No longer needed - using bind mount

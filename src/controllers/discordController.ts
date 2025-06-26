@@ -16,6 +16,8 @@ import {
 import { createLogger } from '../utils/logger';
 import secureCredentials from '../utils/secureCredentials';
 import { promptStorage } from '../services/promptStorage';
+import { generateSessionLinks } from '../utils/sessionUrls';
+import { sessionStorage } from '../services/sessionStorage';
 import type { Response } from 'express';
 import type { DiscordWebhookRequest, DiscordWebhookHandler } from '../types/discord-express';
 import type { DiscordInteractionPayload, DiscordInteractionResponse } from '../types/discord';
@@ -227,11 +229,11 @@ function handleApplicationCommand(
       'Parsed Discord command'
     );
 
-    // Generate operation ID and start tracking
-    const operationId = discordOperationTracker.generateOperationId();
+    // Generate session ID upfront for consistent usage everywhere
+    const sessionId = sessionStorage.generateSessionId();
 
     const operation: PendingDiscordOperation = {
-      operationId,
+      operationId: sessionId, // Use sessionId as operationId for now (will update type later)
       userId: user.id,
       channelId: payload.channel_id ?? '',
       guildId: payload.guild_id,
@@ -256,17 +258,18 @@ function handleApplicationCommand(
     const fullPrompt = generateClaudePrompt(commandOptions);
     operation.fullPrompt = fullPrompt;
 
-    // Store the prompt for web access
-    promptStorage.set(operationId, {
+    // Store the prompt for web access using sessionId
+    promptStorage.set(sessionId, {
       prompt: fullPrompt,
       timestamp: Date.now(),
-      operationId
+      operationId: sessionId
     });
 
     // Log command execution
     logger.info(
       {
-        operationId,
+        sessionId,
+        operationId: sessionId,
         userId: user.id,
         username: user.username,
         command: commandData.name,
@@ -281,7 +284,7 @@ function handleApplicationCommand(
       data: {
         embeds: [
           createOperationStartEmbed(
-            operationId,
+            sessionId,
             parsedCommand.commandText,
             operation.repository,
             fullPrompt
@@ -291,8 +294,8 @@ function handleApplicationCommand(
     });
 
     // Process the command asynchronously - will edit the original interaction response
-    processDiscordOperationAsync(operationId, payload).catch(error => {
-      logger.error({ operationId, err: error }, 'Error in async Discord operation processing');
+    processDiscordOperationAsync(sessionId, payload).catch(error => {
+      logger.error({ sessionId, operationId: sessionId, err: error }, 'Error in async Discord operation processing');
     });
 
     return res;
@@ -314,19 +317,20 @@ function handleApplicationCommand(
  * Process Discord operation asynchronously using operation tracker
  */
 async function processDiscordOperationAsync(
-  operationId: string,
+  sessionId: string,
   payload: DiscordInteractionPayload
 ): Promise<void> {
-  const operation = discordOperationTracker.getOperation(operationId);
+  const operation = discordOperationTracker.getOperation(sessionId);
   if (!operation) {
-    logger.error({ operationId }, 'Operation not found for processing');
+    logger.error({ sessionId, operationId: sessionId }, 'Operation not found for processing');
     return;
   }
 
   try {
     logger.info(
       {
-        operationId,
+        sessionId,
+        operationId: sessionId,
         repository: operation.repository,
         userId: operation.userId,
         command: operation.command
@@ -340,7 +344,8 @@ async function processDiscordOperationAsync(
       issueNumber: operation.repository ? 0 : undefined, // Only set for repository commands
       command: operation.command,
       isPullRequest: false,
-      branchName: null
+      branchName: null,
+      template: 'default' // Can be made configurable later
     };
 
     const fullPrompt = generateClaudePrompt(commandOptions);
@@ -348,11 +353,48 @@ async function processDiscordOperationAsync(
     // Store the prompt in the operation for debugging
     operation.fullPrompt = fullPrompt;
 
-    // Use existing Claude service - same as GitHub!
-    const claudeResponse = await processCommand(commandOptions);
+    // Use existing Claude service with sessionId
+    const result = await processCommand({
+      ...commandOptions,
+      sessionId
+    });
 
     const duration = Date.now() - operation.startTime.getTime();
 
+    if (!result.success) {
+      logger.error('Discord Claude command failed', { error: result.error, sessionId, operationId: sessionId });
+      
+      // Edit the original interaction response with error status
+      await editInteractionResponse({
+        applicationId: DISCORD_APPLICATION_ID ?? '',
+        interactionToken: payload.token,
+        content: `<@${operation.userId}>`,
+        embeds: [
+          createOperationStatusEmbed(
+            operation.operationId,
+            operation.command,
+            operation.repository,
+            false,
+            duration,
+            operation.fullPrompt
+          )
+        ]
+      });
+      
+      // Send error message
+      await sendChannelMessage({
+        channelId: operation.channelId,
+        content: `❌ Error: ${result.error ?? 'Command execution failed'}`,
+        operationId: operation.operationId
+      });
+      
+      return;
+    }
+
+    // Generate session links using sessionId
+    const baseUrl = process.env.WEBHOOK_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
+    const sessionLinks = generateSessionLinks(sessionId, baseUrl, result.sessionPath);
+    
     // Edit the original interaction response with simple completion status
     await editInteractionResponse({
       applicationId: DISCORD_APPLICATION_ID ?? '',
@@ -365,7 +407,8 @@ async function processDiscordOperationAsync(
           operation.repository,
           true,
           duration,
-          operation.fullPrompt
+          operation.fullPrompt,
+          sessionLinks
         )
       ]
     });
@@ -373,13 +416,14 @@ async function processDiscordOperationAsync(
     // Send the actual result as a follow-up message (no code blocks, just raw response)
     await sendChannelMessage({
       channelId: operation.channelId,
-      content: claudeResponse,
+      content: result.response ?? 'No response from Claude',
       operationId: operation.operationId
     });
 
     logger.info(
       {
-        operationId,
+        sessionId,
+        operationId: sessionId,
         userId: operation.userId,
         repository: operation.repository,
         duration
@@ -391,7 +435,8 @@ async function processDiscordOperationAsync(
 
     logger.error(
       {
-        operationId,
+        sessionId,
+        operationId: sessionId,
         err: err.message,
         userId: operation.userId,
         repository: operation.repository
@@ -421,10 +466,11 @@ async function processDiscordOperationAsync(
 
       // Send the error message as a follow-up
       // Ensure error message doesn't exceed Discord limit
-      const errorMessage = err.message.length > 1900 
-        ? `❌ **Error:** ${err.message.substring(0, 1900)}...`
-        : `❌ **Error:** ${err.message}`;
-        
+      const errorMessage =
+        err.message.length > 1900
+          ? `❌ **Error:** ${err.message.substring(0, 1900)}...`
+          : `❌ **Error:** ${err.message}`;
+
       await sendChannelMessage({
         channelId: operation.channelId,
         content: errorMessage,
@@ -433,7 +479,8 @@ async function processDiscordOperationAsync(
     } catch (notificationError) {
       logger.error(
         {
-          operationId,
+          sessionId,
+          operationId: sessionId,
           err: notificationError
         },
         'Failed to edit interaction response with error status'
@@ -441,7 +488,7 @@ async function processDiscordOperationAsync(
     }
   } finally {
     // Clean up operation tracking
-    discordOperationTracker.completeOperation(operationId);
+    discordOperationTracker.completeOperation(sessionId);
   }
 }
 

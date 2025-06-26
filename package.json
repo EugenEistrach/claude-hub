@@ -37,6 +37,7 @@
     "prepare": "husky || true"
   },
   "dependencies": {
+    "@mariozechner/claude-trace": "^1.0.3",
     "@octokit/rest": "^22.0.0",
     "axios": "^1.6.2",
     "body-parser": "^2.2.0",

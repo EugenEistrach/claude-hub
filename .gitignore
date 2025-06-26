@@ -40,6 +40,7 @@ test/**/*.js.map
 # Temporary files
 tmp/
 temp/
+scripts/test-temp/
 
 # OS generated files
 .DS_Store
@@ -92,7 +93,6 @@ secrets/
 # Docker overrides (local development)
 docker-compose.override.yml
 
-
 # Temporary and backup files
 *.backup
 *.tmp
@@ -103,3 +103,5 @@ docker-compose.override.yml
 /test-*.js
 /PR_SUMMARY.md
 /*-proposal.md
+
+sessions/

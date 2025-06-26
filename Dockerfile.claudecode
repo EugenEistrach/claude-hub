@@ -17,7 +17,8 @@ RUN apt update && apt install -y less \
   dnsutils \
   aggregate \
   jq \
-  curl
+  curl \
+  gettext-base
 
 # Set up npm global directory
 RUN mkdir -p /usr/local/share/npm-global && \
@@ -41,6 +42,9 @@ ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
 # Install Claude Code  
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install Claude Trace
+RUN npm install -g @mariozechner/claude-trace
 
 # Install Vercel CLI
 RUN npm install -g vercel
@@ -77,12 +81,18 @@ RUN chmod +x /usr/local/bin/init-firewall.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
+# Copy custom Claude Trace loader
+COPY scripts/claude-trace-loader.js /usr/local/lib/
+
 # Create scripts directory and copy unified entrypoint script
 RUN mkdir -p /scripts/runtime
 COPY scripts/runtime/claudecode-entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/runtime/claudecode-entrypoint.sh /scripts/runtime/claudecode-entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && \
   chmod +x /scripts/runtime/claudecode-entrypoint.sh
+
+# Copy workspace templates
+COPY templates/ /templates/
 
 # Set the default shell to bash
 ENV SHELL /bin/zsh

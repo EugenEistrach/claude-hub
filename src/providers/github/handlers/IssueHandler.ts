@@ -63,7 +63,7 @@ Instructions:
 Complete the auto-tagging task using only GitHub CLI commands.`;
 
       // Process with Claude
-      const claudeResponse = await processCommand({
+      const result = await processCommand({
         repoFullName: repo.full_name,
         issueNumber: issue.number,
         command: tagCommand,
@@ -73,12 +73,12 @@ Complete the auto-tagging task using only GitHub CLI commands.`;
       });
 
       // Check if Claude succeeded
-      if (claudeResponse.includes('error') || claudeResponse.includes('failed')) {
+      if (!result.success || result.response?.includes('error') || result.response?.includes('failed')) {
         logger.warn(
           {
             repo: repo.full_name,
             issue: issue.number,
-            responsePreview: claudeResponse.substring(0, 200)
+            responsePreview: result.response?.substring(0, 200) ?? result.error ?? 'No response'
           },
           'Claude CLI tagging may have failed, attempting fallback'
         );

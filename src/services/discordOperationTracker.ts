@@ -7,7 +7,8 @@ const logger = createLogger('discordOperationTracker');
  * Interface for tracking pending Discord operations
  */
 export interface PendingDiscordOperation {
-  operationId: string; // Unique operation ID
+  operationId: string; // Using sessionId as operationId for consistency
+  sessionId?: string; // Optional explicit sessionId (same as operationId)
   userId: string; // Discord user ID
   channelId: string; // Discord channel ID
   guildId?: string; // Discord server ID (optional for DMs)
@@ -33,6 +34,7 @@ class DiscordOperationTracker {
 
   /**
    * Generate a unique operation ID
+   * @deprecated Use sessionStorage.generateSessionId() instead
    */
   generateOperationId(): string {
     return `discord-${randomBytes(6).toString('hex')}`;
@@ -47,6 +49,7 @@ class DiscordOperationTracker {
     logger.info(
       {
         operationId: operation.operationId,
+        sessionId: operation.sessionId ?? operation.operationId,
         userId: operation.userId,
         username: operation.username,
         repository: operation.repository,

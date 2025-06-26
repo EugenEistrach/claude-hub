@@ -12,6 +12,7 @@ import {
 import { createLogger } from '../utils/logger';
 import { sanitizeBotMentions } from '../utils/sanitize';
 import secureCredentials from '../utils/secureCredentials';
+import { sessionStorage } from '../services/sessionStorage';
 import type {
   WebhookHandler,
   WebhookRequest,
@@ -27,6 +28,8 @@ import type {
   GitHubRepository
 } from '../types/github';
 import type { Response } from 'express';
+import { generateSessionLinks, getBaseUrl } from '../utils/sessionUrls';
+import type { EnhancedGitHubResponse } from '../types/responses';
 
 const logger = createLogger('githubController');
 
@@ -150,17 +153,17 @@ export const handleWebhook: WebhookHandler = async (req, res) => {
 
     // Handle issues being opened for auto-tagging
     if (event === 'issues' && payload.action === 'opened') {
-      return await handleIssueOpened(payload, res);
+      return await handleIssueOpened(payload, req, res);
     }
 
     // Handle issue comment events
     if (event === 'issue_comment' && payload.action === 'created') {
-      return await handleIssueComment(payload, res);
+      return await handleIssueComment(payload, req, res);
     }
 
     // Handle check suite completion for automated PR review
     if (event === 'check_suite' && payload.action === 'completed') {
-      return await handleCheckSuiteCompleted(payload, res);
+      return await handleCheckSuiteCompleted(payload, req, res);
     }
 
     // Handle pull request comment events
@@ -168,7 +171,7 @@ export const handleWebhook: WebhookHandler = async (req, res) => {
       (event === 'pull_request_review_comment' || event === 'pull_request') &&
       payload.action === 'created'
     ) {
-      return await handlePullRequestComment(payload, res);
+      return await handlePullRequestComment(payload, req, res);
     }
 
     logger.info({ event }, 'Webhook processed successfully');
@@ -183,6 +186,7 @@ export const handleWebhook: WebhookHandler = async (req, res) => {
  */
 async function handleIssueOpened(
   payload: GitHubWebhookPayload,
+  req: WebhookRequest,
   res: Response<WebhookResponse | ErrorResponse>
 ): Promise<Response<WebhookResponse | ErrorResponse>> {
   const issue = payload.issue;
@@ -227,23 +231,27 @@ Instructions:
 Complete the auto-tagging task using only GitHub CLI commands.`;
 
     logger.info('Sending issue to Claude for CLI-based auto-tagging');
-    const claudeResponse = await processCommand({
+    // Generate sessionId for this operation
+    const sessionId = sessionStorage.generateSessionId();
+    const result = await processCommand({
       repoFullName: repo.full_name,
       issueNumber: issue.number,
       command: tagCommand,
       isPullRequest: false,
       branchName: null,
-      operationType: 'auto-tagging'
+      operationType: 'auto-tagging',
+      template: 'default',
+      sessionId
     });
 
     // With CLI-based approach, Claude handles the labeling directly
     // Check if the response indicates success or if we need fallback
-    if (claudeResponse.includes('error') || claudeResponse.includes('failed')) {
+    if (!result.success || result.response?.includes('error') || result.response?.includes('failed')) {
       logger.warn(
         {
           repo: repo.full_name,
           issue: issue.number,
-          responsePreview: claudeResponse.substring(0, 200)
+          responsePreview: result.response?.substring(0, 200) ?? result.error ?? 'No response'
         },
         'Claude CLI tagging may have failed, attempting fallback'
       );
@@ -264,21 +272,29 @@ Complete the auto-tagging task using only GitHub CLI commands.`;
         {
           repo: repo.full_name,
           issue: issue.number,
-          responseLength: claudeResponse.length
+          responseLength: result.response?.length ?? 0
         },
         'Auto-tagging completed with CLI approach'
       );
     }
 
-    return res.status(200).json({
+    // Generate session links
+    const baseUrl = getBaseUrl(req);
+    const links = generateSessionLinks(result.sessionId, baseUrl, result.sessionPath);
+
+    const response: EnhancedGitHubResponse = {
       success: true,
+      sessionId: result.sessionId,
       message: 'Issue auto-tagged successfully',
+      links,
       context: {
         repo: repo.full_name,
         issue: issue.number,
         type: 'issues_opened'
       }
-    });
+    };
+    
+    return res.status(200).json(response);
   } catch (error) {
     const err = error as Error;
     logger.error(
@@ -307,6 +323,7 @@ Complete the auto-tagging task using only GitHub CLI commands.`;
  */
 async function handleIssueComment(
   payload: GitHubWebhookPayload,
+  req: WebhookRequest,
   res: Response<WebhookResponse | ErrorResponse>
 ): Promise<Response<WebhookResponse | ErrorResponse>> {
   const comment = payload.comment;
@@ -332,7 +349,7 @@ async function handleIssueComment(
 
   // Check if comment mentions the bot
   if (comment.body.includes(BOT_USERNAME)) {
-    return await processBotMention(comment, issue, repo, res);
+    return await processBotMention(comment, issue, repo, req, res);
   }
 
   return res.status(200).json({ message: 'Webhook processed successfully' });
@@ -343,6 +360,7 @@ async function handleIssueComment(
  */
 async function handlePullRequestComment(
   payload: GitHubWebhookPayload,
+  req: WebhookRequest,
   res: Response<WebhookResponse | ErrorResponse>
 ): Promise<Response<WebhookResponse | ErrorResponse>> {
   const pr = payload.pull_request;
@@ -388,34 +406,60 @@ async function handlePullRequestComment(
 
       // Check for manual review command
       if (command.toLowerCase() === 'review') {
-        return await handleManualPRReview(pr, repo, payload.sender, res);
+        return await handleManualPRReview(pr, repo, payload.sender, req, res);
       }
 
       try {
         // Process the command with Claude
         logger.info('Sending command to Claude service');
-        const claudeResponse = await processCommand({
+        // Generate sessionId for this operation
+        const sessionId = sessionStorage.generateSessionId();
+        const result = await processCommand({
           repoFullName: repo.full_name,
           issueNumber: pr.number,
           command: command,
           isPullRequest: true,
-          branchName: pr.head.ref
+          branchName: pr.head.ref,
+          template: 'default',
+          sessionId
         });
 
         // Return Claude's response in the webhook response
         logger.info('Returning Claude response via webhook');
 
-        return res.status(200).json({
+        if (!result.success) {
+          return res.status(500).json({
+            success: false,
+            error: 'Command execution failed',
+            message: result.error ?? 'Unknown error',
+            context: {
+              repo: repo.full_name,
+              pr: pr.number,
+              type: 'pull_request_comment',
+              sender: comment.user.login
+            }
+          });
+        }
+
+        // Generate session links using environment variable for base URL
+        const baseUrl = process.env.WEBHOOK_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
+        const links = generateSessionLinks(result.sessionId, baseUrl, result.sessionPath);
+
+        const response: EnhancedGitHubResponse = {
           success: true,
+          sessionId: result.sessionId,
           message: 'Command processed successfully',
-          claudeResponse: claudeResponse,
+          claudeResponse: result.response,
+          links,
           context: {
             repo: repo.full_name,
             pr: pr.number,
             type: 'pull_request',
             branch: pr.head.ref
           }
-        });
+        };
+        
+        return res.status(200).json(response);
       } catch (error) {
         return handleCommandError(error, { repo, issue: { number: pr.number }, command }, res);
       }
@@ -432,6 +476,7 @@ async function processBotMention(
   comment: GitHubComment,
   issue: GitHubIssue | GitHubPullRequest,
   repo: GitHubRepository,
+  req: WebhookRequest,
   res: Response<WebhookResponse | ErrorResponse>
 ): Promise<Response<WebhookResponse | ErrorResponse>> {
   // Check if the comment author is authorized
@@ -500,7 +545,7 @@ async function processBotMention(
     if (command.toLowerCase() === 'review') {
       // Check if this is already a PR object
       if ('head' in issue && 'base' in issue) {
-        return await handleManualPRReview(issue, repo, comment.user, res);
+        return await handleManualPRReview(issue, repo, comment.user, req, res);
       }
 
       // Check if this issue is actually a PR (GitHub includes pull_request property for PR comments)
@@ -535,20 +580,39 @@ async function processBotMention(
           base: prDetails.base
         } as GitHubPullRequest;
 
-        return await handleManualPRReview(mockPR, repo, comment.user, res);
+        return await handleManualPRReview(mockPR, repo, comment.user, req, res);
       }
     }
 
     try {
       // Process the command with Claude
       logger.info('Sending command to Claude service');
-      const claudeResponse = await processCommand({
+      // Generate sessionId for this operation
+      const sessionId = sessionStorage.generateSessionId();
+      const result = await processCommand({
         repoFullName: repo.full_name,
         issueNumber: issue.number,
         command: command,
         isPullRequest: false,
-        branchName: null
+        branchName: null,
+        template: 'default',
+        sessionId
       });
+
+      if (!result.success) {
+        logger.error('Claude command failed', { error: result.error });
+        return res.status(500).json({
+          success: false,
+          error: 'Command execution failed',
+          message: result.error ?? 'Unknown error',
+          context: {
+            repo: repo.full_name,
+            issue: issue.number,
+            type: 'issue_comment',
+            sender: comment.user.login
+          }
+        });
+      }
 
       // Post Claude's response as a comment on the issue
       logger.info('Posting Claude response as GitHub comment');
@@ -556,21 +620,29 @@ async function processBotMention(
         repoOwner: repo.owner.login,
         repoName: repo.name,
         issueNumber: issue.number,
-        body: claudeResponse
+        body: result.response ?? 'Error: No response from Claude'
       });
 
       // Return success in the webhook response
       logger.info('Claude response posted successfully');
 
-      return res.status(200).json({
+      // Generate session links
+      const baseUrl = getBaseUrl(req);
+      const links = generateSessionLinks(result.sessionId, baseUrl, result.sessionPath);
+
+      const response: EnhancedGitHubResponse = {
         success: true,
+        sessionId: result.sessionId,
         message: 'Command processed and response posted',
+        links,
         context: {
           repo: repo.full_name,
           issue: issue.number,
           type: 'issue_comment'
         }
-      });
+      };
+      
+      return res.status(200).json(response);
     } catch (error) {
       return handleCommandError(error, { repo, issue, command }, res);
     }
@@ -586,6 +658,7 @@ async function handleManualPRReview(
   pr: GitHubPullRequest,
   repo: GitHubRepository,
   sender: { login: string },
+  req: WebhookRequest,
   res: Response<WebhookResponse | ErrorResponse>
 ): Promise<Response<WebhookResponse | ErrorResponse>> {
   try {
@@ -667,21 +740,53 @@ async function handleManualPRReview(
 
     // Process the PR review with Claude
     logger.info('Sending PR for manual Claude review');
-    const claudeResponse = await processCommand({
+    // Generate sessionId for this operation
+    const sessionId = sessionStorage.generateSessionId();
+    const result = await processCommand({
       repoFullName: repo.full_name,
       issueNumber: pr.number,
       command: prReviewPrompt,
       isPullRequest: true,
       branchName: pr.head.ref,
-      operationType: 'manual-pr-review'
+      operationType: 'manual-pr-review',
+      template: 'default',
+      sessionId
     });
+
+    if (!result.success) {
+      logger.error('Manual PR review failed', { error: result.error });
+      // Try to remove the in-progress label
+      try {
+        await managePRLabels({
+          repoOwner: repo.owner.login,
+          repoName: repo.name,
+          prNumber: pr.number,
+          labelsToAdd: ['claude-review-needed'],
+          labelsToRemove: ['claude-review-in-progress']
+        });
+      } catch (labelError) {
+        logger.error('Failed to update labels after review failure', { error: (labelError as Error).message });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'PR review failed',
+        message: result.error ?? 'Unknown error',
+        context: {
+          repo: repo.full_name,
+          pr: pr.number,
+          type: 'manual_pr_review',
+          sender: sender.login
+        }
+      });
+    }
 
     logger.info(
       {
         repo: repo.full_name,
         pr: pr.number,
         sender: sender.login,
-        responseLength: claudeResponse ? claudeResponse.length : 0
+        responseLength: result.response ? result.response.length : 0
       },
       'Manual PR review completed successfully'
     );
@@ -707,9 +812,15 @@ async function handleManualPRReview(
       // Don't fail the review if label update fails
     }
 
-    return res.status(200).json({
+    // Generate session links
+    const baseUrl = getBaseUrl(req);
+    const links = generateSessionLinks(result.sessionId, baseUrl, result.sessionPath);
+
+    const response: EnhancedGitHubResponse = {
       success: true,
+      sessionId: result.sessionId,
       message: 'Manual PR review completed successfully',
+      links,
       context: {
         repo: repo.full_name,
         pr: pr.number,
@@ -717,7 +828,9 @@ async function handleManualPRReview(
         sender: sender.login,
         branch: pr.head.ref
       }
-    });
+    };
+    
+    return res.status(200).json(response);
   } catch (error) {
     const err = error as Error;
     logger.error(
@@ -858,6 +971,7 @@ Please check with an administrator to review the logs for more details.`
  */
 async function handleCheckSuiteCompleted(
   payload: GitHubWebhookPayload,
+  _req: WebhookRequest, // Not used currently, but available for future enhancements
   res: Response<WebhookResponse | ErrorResponse>
 ): Promise<Response<WebhookResponse | ErrorResponse>> {
   const checkSuite = payload.check_suite;
@@ -1071,20 +1185,31 @@ async function processAutomatedPRReviews(
 
         // Process the PR review with Claude
         logger.info('Sending PR for automated Claude review');
-        const claudeResponse = await processCommand({
+        // Generate sessionId for this operation
+        const sessionId = sessionStorage.generateSessionId();
+        const result = await processCommand({
           repoFullName: repo.full_name,
           issueNumber: pr.number,
           command: prReviewPrompt,
           isPullRequest: true,
           branchName: pr.head.ref,
-          operationType: 'pr-review'
+          operationType: 'pr-review',
+          template: 'default',
+          sessionId
         });
+
+        if (!result.success) {
+          logger.error('Automated PR review failed', { error: result.error });
+          prResult.success = false;
+          prResult.error = result.error ?? 'Unknown error';
+          return prResult;
+        }
 
         logger.info(
           {
             repo: repo.full_name,
             pr: pr.number,
-            responseLength: claudeResponse ? claudeResponse.length : 0
+            responseLength: result.response ? result.response.length : 0
           },
           'Automated PR review completed successfully'
         );

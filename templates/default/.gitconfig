@@ -1,0 +1,7 @@
+[user]
+	email = ${BOT_EMAIL}
+	name = ${BOT_USERNAME}
+[core]
+	autocrlf = input
+[credential]
+	helper = store

@@ -2,10 +2,10 @@ import { execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 import path from 'path';
-import fs from 'fs';
 import { createLogger } from '../utils/logger';
 import { sanitizeBotMentions } from '../utils/sanitize';
 import secureCredentials from '../utils/secureCredentials';
+import { sessionStorage } from './sessionStorage';
 import type {
   ClaudeCommandOptions,
   OperationType,
@@ -14,6 +14,7 @@ import type {
   ContainerSecurityConfig,
   ClaudeResourceLimits
 } from '../types/claude';
+import type { ClaudeExecutionResult } from '../types/responses';
 
 const logger = createLogger('claudeService');
 
@@ -30,19 +31,6 @@ if (!BOT_USERNAME) {
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Process template string by replacing ${VAR_NAME} with environment variable values
- */
-function processTemplate(templateContent: string, env: Record<string, string | undefined>): string {
-  return templateContent.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-    const value = env[varName];
-    if (value === undefined) {
-      logger.warn({ varName }, 'Environment variable not found for MCP template substitution');
-      return match; // Keep placeholder if env var not found
-    }
-    return value;
-  });
-}
 
 /**
  * Generate the prompt that would be sent to Claude (for debugging)
@@ -74,8 +62,10 @@ export async function processCommand({
   command,
   isPullRequest = false,
   branchName = null,
-  operationType = 'default'
-}: ClaudeCommandOptions): Promise<string> {
+  operationType = 'default',
+  sessionId: providedSessionId,
+  template = 'default'
+}: ClaudeCommandOptions): Promise<ClaudeExecutionResult> {
   try {
     logger.info(
       {
@@ -89,13 +79,13 @@ export async function processCommand({
     );
 
     const githubToken = secureCredentials.get('GITHUB_TOKEN');
-  const vercelToken = secureCredentials.get('VERCEL_TOKEN') ?? process.env.VERCEL_TOKEN;
-  
-  if (vercelToken) {
-    logger.info('VERCEL_TOKEN is available for Claude container');
-  } else {
-    logger.info('VERCEL_TOKEN is not set - Vercel CLI will not be authenticated');
-  }
+    const vercelToken = secureCredentials.get('VERCEL_TOKEN') ?? process.env.VERCEL_TOKEN;
+
+    if (vercelToken) {
+      logger.info('VERCEL_TOKEN is available for Claude container');
+    } else {
+      logger.info('VERCEL_TOKEN is not set - Vercel CLI will not be authenticated');
+    }
 
     // In test mode, skip execution and return a mock response
     // Support both classic (ghp_) and fine-grained (github_pat_) GitHub tokens
@@ -122,7 +112,39 @@ Since this is a test environment, I'm providing a simulated response. In product
 For real functionality, please configure valid GitHub and Claude API tokens.`;
 
       // Always sanitize responses, even in test mode
-      return sanitizeBotMentions(testResponse);
+      return {
+        success: true,
+        sessionId: 'test-session-' + Date.now(),
+        response: sanitizeBotMentions(testResponse),
+        sessionPath: undefined
+      };
+    }
+
+    // Use provided session ID or generate a new one
+    const sessionId = providedSessionId ?? sessionStorage.generateSessionId();
+
+    // Only create session if we generated a new ID (not provided externally)
+    if (!providedSessionId) {
+      const sessionMetadata = {
+        id: sessionId,
+        timestamp: Date.now(),
+        operationId: `op-${Date.now()}`,
+        repoFullName,
+        issueNumber,
+        isPullRequest,
+        branchName,
+        operationType
+      };
+
+      // Create session and save prompt
+      await sessionStorage.createSession(sessionMetadata);
+      await sessionStorage.savePrompt(sessionId, command);
+
+      logger.info({ sessionId }, 'Created session for Claude execution');
+    } else {
+      // If session ID was provided, just save the prompt
+      await sessionStorage.savePrompt(sessionId, command);
+      logger.info({ sessionId }, 'Using existing session for Claude execution');
     }
 
     // Build Docker image if it doesn't exist
@@ -182,7 +204,9 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
       operationType,
       fullPrompt,
       githubToken,
-      vercelToken
+      vercelToken,
+      sessionId,
+      template
     });
 
     // Run the container
@@ -222,6 +246,34 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
       const result = await execFileAsync('docker', dockerArgs, executionOptions);
 
       let responseText = result.stdout.trim();
+      
+      logger.info({ sessionId, hasSessionId: !!sessionId, dockerExited: true }, 'DOCKER EXECUTION COMPLETED');
+      
+      // With direct mounting to host sessions directory, no file copying needed
+      if (sessionId) {
+        logger.info({ sessionId }, 'Claude container completed - trace files should be directly in host sessions directory');
+        
+        // Clean up the container
+        try {
+          execFileSync('docker', ['rm', containerName], { stdio: 'pipe' });
+          logger.info({ sessionId, containerName }, 'Cleaned up claude container');
+        } catch (e) {
+          logger.warn({ sessionId, containerName, error: (e as Error).message }, 'Failed to cleanup claude container');
+        }
+      }
+      
+      // Save stderr to file for debugging (contains all our DEBUG output)
+      if (result.stderr && sessionId) {
+        const debugPath = `/app/sessions/${sessionId}/container-stderr.log`;
+        try {
+          const fs = require('fs');
+          fs.mkdirSync(`/app/sessions/${sessionId}`, { recursive: true });
+          fs.writeFileSync(debugPath, result.stderr);
+          logger.info({ debugPath, sessionId }, 'Container debug output saved');
+        } catch (e) {
+          logger.error({ error: (e as Error).message }, 'Failed to save debug output');
+        }
+      }
 
       // Check for empty response
       if (!responseText) {
@@ -267,7 +319,24 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
         'Claude Code execution completed successfully'
       );
 
-      return responseText;
+      // Save response to session storage
+      await sessionStorage.saveResponse(sessionId, responseText);
+      logger.info({ sessionId }, 'Response saved to session storage');
+
+      // Don't pass sessionPath since files are in Docker volume not accessible from host
+      // The session storage service will handle checking file existence
+      
+      return {
+        success: true,
+        sessionId,
+        response: responseText,
+        sessionPath: undefined, // Let URL generation be optimistic
+        metadata: {
+          startTime: Date.now() - 60000, // Approximate start time
+          endTime: Date.now(),
+          duration: 60000 // Approximate duration
+        }
+      };
     } catch (error) {
       return handleDockerExecutionError(error, {
         containerName,
@@ -529,7 +598,9 @@ function createEnvironmentVars({
   operationType,
   fullPrompt,
   githubToken,
-  vercelToken
+  vercelToken,
+  sessionId,
+  template
 }: {
   repoFullName?: string;
   issueNumber?: number | null;
@@ -539,8 +610,10 @@ function createEnvironmentVars({
   fullPrompt: string;
   githubToken: string;
   vercelToken?: string;
+  sessionId?: string;
+  template?: string;
 }): ClaudeEnvironmentVars {
-  return {
+  const envVars: ClaudeEnvironmentVars = {
     REPO_FULL_NAME: repoFullName ?? '',
     ISSUE_NUMBER: issueNumber?.toString() ?? '',
     IS_PULL_REQUEST: isPullRequest ? 'true' : 'false',
@@ -551,8 +624,20 @@ function createEnvironmentVars({
     ANTHROPIC_API_KEY: secureCredentials.get('ANTHROPIC_API_KEY') ?? '',
     BOT_USERNAME: process.env.BOT_USERNAME,
     BOT_EMAIL: process.env.BOT_EMAIL,
-    VERCEL_TOKEN: vercelToken ?? ''
+    VERCEL_TOKEN: vercelToken ?? '',
+    WORKSPACE_TEMPLATE: template ?? 'default',
+    DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN ?? '',
+    DISCORD_CHANNEL_ID: process.env.DISCORD_CHANNEL_ID ?? ''
   };
+
+  // Always add Claude Trace environment variables
+  if (sessionId) {
+    envVars.CLAUDE_TRACE_SESSION_ID = sessionId;
+    envVars.CLAUDE_TRACE_OUTPUT_DIR = `/tmp/claude-shared/${sessionId}`;
+    envVars.SESSION_ID = sessionId;
+  }
+
+  return envVars;
 }
 
 /**
@@ -569,7 +654,7 @@ function buildDockerArgs({
   dockerImageName: string;
   envVars: ClaudeEnvironmentVars;
 }): string[] {
-  const dockerArgs = ['run', '--rm'];
+  const dockerArgs = ['run']; // Don't use --rm, we need to copy files first
 
   // Apply container security constraints
   const securityConfig = getContainerSecurityConfig();
@@ -589,44 +674,12 @@ function buildDockerArgs({
     dockerArgs.push('-v', `${absoluteAuthDir}:/home/node/.claude`);
   }
 
-  // Prepare MCP configuration for copying into container
-  // Template file is mounted directly into the webhook container at /app/.mcp.json.template
-  const mcpTemplatePath = path.resolve('/app', '.mcp.json.template');
-  const mcpConfigPath = path.resolve('/app', '.mcp.json');
-  
-  logger.info({ 
-    cwd: process.cwd(),
-    mcpTemplatePath,
-    mcpConfigPath,
-    templateExists: fs.existsSync(mcpTemplatePath),
-    configExists: fs.existsSync(mcpConfigPath)
-  }, 'Checking for MCP configuration files');
-  
-  let mcpConfigContent = '';
-  
-  // Process MCP template if it exists
-  if (fs.existsSync(mcpTemplatePath)) {
-    logger.info('Found MCP template, processing with environment variables');
-    const templateContent = fs.readFileSync(mcpTemplatePath, 'utf8');
-    mcpConfigContent = processTemplate(templateContent, process.env);
-    logger.info({ 
-      templateLength: templateContent.length,
-      processedLength: mcpConfigContent.length,
-      hasDiscordToken: mcpConfigContent.includes('DISCORD_BOT_TOKEN'),
-      hasGitHubToken: mcpConfigContent.includes('GITHUB_TOKEN')
-    }, 'MCP template processed successfully');
-  } else if (fs.existsSync(mcpConfigPath)) {
-    logger.info('Found static MCP config file');
-    mcpConfigContent = fs.readFileSync(mcpConfigPath, 'utf8');
-  } else {
-    logger.info('No MCP configuration found (neither .mcp.json.template nor .mcp.json)');
-  }
+  // Mount the host sessions directory directly into claude container
+  // This is the same directory that's mounted in the webhook container as /app/sessions
+  const hostSessionsDir = process.env.HOST_SESSIONS_DIR || '/tmp/sessions-fallback';
+  dockerArgs.push('-v', `${hostSessionsDir}:/sessions`);
 
-  // Store MCP config content in environment variable for entrypoint to handle
-  if (mcpConfigContent) {
-    envVars.MCP_CONFIG_CONTENT = mcpConfigContent;
-    logger.info({ configSize: mcpConfigContent.length }, 'MCP configuration will be copied by entrypoint script');
-  }
+  // MCP configuration is now handled through template files
 
   // Add environment variables as separate arguments
   Object.entries(envVars)
@@ -747,7 +800,7 @@ function handleDockerExecutionError(
     repoFullName: string;
     issueNumber: number | null;
   }
-): never {
+): ClaudeExecutionResult {
   const err = error as Error & { stderr?: string; stdout?: string; message: string };
 
   // Sanitize stderr and stdout to remove any potential credentials
@@ -813,6 +866,18 @@ function handleDockerExecutionError(
     }
   }
 
+  // Log detailed error output for debugging
+  if (err.stderr || err.stdout) {
+    logger.error(
+      {
+        stderr: err.stderr ?? 'No stderr',
+        stdout: err.stdout ?? 'No stdout',
+        errorMessage: err.message
+      },
+      'Detailed error output from container'
+    );
+  }
+  
   logger.error(
     {
       error: err.message,
@@ -866,12 +931,16 @@ function handleDockerExecutionError(
     'Claude Code container execution failed (with error reference)'
   );
 
-  // Throw a generic error with reference ID, but without sensitive details
+  // Return error result with reference ID, but without sensitive details
   const errorMessage = sanitizeBotMentions(
     `Error executing Claude command (Reference: ${errorId}, Time: ${timestamp})`
   );
 
-  throw new Error(errorMessage);
+  return {
+    success: false,
+    sessionId: 'error-' + errorId,
+    error: errorMessage
+  };
 }
 
 /**
@@ -880,7 +949,7 @@ function handleDockerExecutionError(
 function handleGeneralError(
   error: unknown,
   context: { repoFullName: string; issueNumber: number | null }
-): never {
+): ClaudeExecutionResult {
   const err = error as Error;
 
   // Sanitize the error message to remove any credentials
@@ -938,10 +1007,14 @@ function handleGeneralError(
     'General error in Claude service (with error reference)'
   );
 
-  // Throw a generic error with reference ID, but without sensitive details
+  // Return error result with reference ID, but without sensitive details
   const errorMessage = sanitizeBotMentions(
     `Error processing Claude command (Reference: ${errorId}, Time: ${timestamp})`
   );
 
-  throw new Error(errorMessage);
+  return {
+    success: false,
+    sessionId: 'error-' + errorId,
+    error: errorMessage
+  };
 }

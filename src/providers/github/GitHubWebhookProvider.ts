@@ -175,9 +175,7 @@ export class GitHubWebhookProvider implements WebhookProvider<GitHubWebhookEvent
       body: issue.body ?? '',
       state: issue.state,
       author: GitHubWebhookProvider.transformUser(issue.user),
-      labels: issue.labels
-        ? issue.labels.map(label => (typeof label === 'string' ? label : label.name))
-        : [],
+      labels: issue.labels.map(label => (typeof label === 'string' ? label : label.name)),
       createdAt: new Date(issue.created_at),
       updatedAt: new Date(issue.updated_at)
     };
@@ -194,9 +192,7 @@ export class GitHubWebhookProvider implements WebhookProvider<GitHubWebhookEvent
       body: pr.body ?? '',
       state: pr.state as 'open' | 'closed',
       author: GitHubWebhookProvider.transformUser(pr.user),
-      labels: pr.labels
-        ? pr.labels.map(label => (typeof label === 'string' ? label : label.name))
-        : [],
+      labels: pr.labels.map(label => (typeof label === 'string' ? label : label.name)),
       createdAt: new Date(pr.created_at),
       updatedAt: new Date(pr.updated_at),
       sourceBranch: pr.head.ref,

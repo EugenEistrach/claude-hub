@@ -8,8 +8,10 @@ import githubRoutes from './routes/github';
 import discordRoutes from './routes/discord';
 import webhookRoutes from './routes/webhooks';
 import claudeRoutes from './routes/claude';
+import sessionsRoutes from './routes/sessions';
 import { promptStorage } from './services/promptStorage';
 import { responseStorage } from './services/responseStorage';
+import { sessionStorage } from './services/sessionStorage';
 import type { WebhookRequest, HealthCheckResponse, ErrorResponse } from './types/express';
 import { execSync } from 'child_process';
 
@@ -93,7 +95,7 @@ app.use(startupMetrics.metricsMiddleware());
 
 app.use(
   bodyParser.json({
-    verify: (req: any, _res, buf) => {
+    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
       // Store the raw body buffer for webhook signature verification
       req.rawBody = buf;
     }
@@ -107,15 +109,33 @@ app.use('/api/webhooks/github', githubRoutes); // Legacy endpoint
 app.use('/api/webhooks/discord', discordRoutes); // Discord integration endpoint
 app.use('/api/webhooks', webhookRoutes); // New modular webhook endpoint
 app.use('/api/claude', claudeRoutes); // Claude agent API endpoint
+app.use('/sessions', sessionsRoutes); // Session storage endpoints
 
 startupMetrics.recordMilestone('routes_configured', 'API routes configured');
 
 // Endpoint to serve full prompts
-app.get('/prompts/:id', (req: express.Request, res: express.Response): void => {
+app.get('/prompts/:id', async (req: express.Request, res: express.Response): Promise<void> => {
   const promptId = req.params.id;
+
+  // First check if this is a session ID in the new storage
+  try {
+    const sessionPrompt = await sessionStorage.getPrompt(promptId);
+    if (sessionPrompt) {
+      appLogger.info({ promptId, source: 'session' }, 'Prompt request (redirecting to session)');
+      res.redirect(`/sessions/${promptId}/prompt`);
+      return;
+    }
+  } catch (error) {
+    appLogger.debug(
+      { error: (error as Error).message },
+      'Session lookup failed, trying memory storage'
+    );
+  }
+
+  // Fall back to in-memory storage
   const promptData = promptStorage.get(promptId);
 
-  appLogger.info({ promptId, found: !!promptData }, 'Prompt request');
+  appLogger.info({ promptId, found: !!promptData, source: 'memory' }, 'Prompt request');
 
   if (!promptData) {
     res
@@ -136,11 +156,31 @@ app.get('/prompts/:id', (req: express.Request, res: express.Response): void => {
 });
 
 // Endpoint to serve full responses
-app.get('/responses/:id', (req: express.Request, res: express.Response): void => {
+app.get('/responses/:id', async (req: express.Request, res: express.Response): Promise<void> => {
   const responseId = req.params.id;
+
+  // First check if this is a session ID in the new storage
+  try {
+    const sessionResponse = await sessionStorage.getResponse(responseId);
+    if (sessionResponse) {
+      appLogger.info(
+        { responseId, source: 'session' },
+        'Response request (redirecting to session)'
+      );
+      res.redirect(`/sessions/${responseId}/response`);
+      return;
+    }
+  } catch (error) {
+    appLogger.debug(
+      { error: (error as Error).message },
+      'Session lookup failed, trying memory storage'
+    );
+  }
+
+  // Fall back to in-memory storage
   const responseData = responseStorage.get(responseId);
 
-  appLogger.info({ responseId, found: !!responseData }, 'Response request');
+  appLogger.info({ responseId, found: !!responseData, source: 'memory' }, 'Response request');
 
   if (!responseData) {
     res

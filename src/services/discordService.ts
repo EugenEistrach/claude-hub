@@ -17,6 +17,8 @@ import type {
   DiscordAPIError
 } from '../types/discord';
 import { DiscordMessageFlags } from '../types/discord';
+import type { SessionLinks } from '../utils/sessionUrls';
+import { formatSessionLinksForDiscord } from '../utils/sessionUrls';
 
 const logger = createLogger('discordService');
 
@@ -525,7 +527,7 @@ export async function sendChannelMessage({
     // Discord message length limit is 2000 characters
     const MAX_CONTENT_LENGTH = 2000;
     let finalContent = content;
-    
+
     if (content && content.length > MAX_CONTENT_LENGTH) {
       logger.warn(
         {
@@ -534,10 +536,10 @@ export async function sendChannelMessage({
         },
         'Discord message content exceeds limit, storing and linking'
       );
-      
+
       // Generate unique ID for this response
       const responseId = `resp-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
-      
+
       // Store the full response
       responseStorage.set(responseId, {
         content,
@@ -545,11 +547,11 @@ export async function sendChannelMessage({
         operationId: operationId ?? responseId,
         channelId
       });
-      
+
       // Create a link to the full response
       const webhookUrl = process.env.WEBHOOK_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
       const responseUrl = `${webhookUrl}/responses/${responseId}`;
-      
+
       // Create a summary message with link
       finalContent = `The response was too long for Discord (${content.length} characters). You can view the full response here:\n\n📄 **[View Full Response](${responseUrl})**\n\n**Summary:** ${content.substring(0, 500)}...`;
     }
@@ -582,10 +584,11 @@ export async function sendChannelMessage({
         data?: DiscordAPIError;
       };
     };
-    const isDiscordError = axiosError.response?.status !== undefined && 
-                           axiosError.response.status >= 400 && 
-                           axiosError.response.status < 500;
-    
+    const isDiscordError =
+      axiosError.response?.status !== undefined &&
+      axiosError.response.status >= 400 &&
+      axiosError.response.status < 500;
+
     // Log detailed error information
     logger.error(
       {
@@ -615,7 +618,7 @@ export async function sendChannelMessage({
     if (isDiscordError && axiosError.response?.data?.message) {
       throw new Error(`Discord API error: ${axiosError.response.data.message}`);
     }
-    
+
     throw new Error(`Failed to send Discord message: ${axiosError.message}`);
   }
 }
@@ -685,9 +688,8 @@ export function createOperationStartEmbed(
   // Truncate command if too long (Discord embed description limit is 4096)
   // Reserve space for the rest of the description (~100 chars)
   const maxCommandLength = 3900;
-  const displayCommand = command.length > maxCommandLength 
-    ? command.substring(0, maxCommandLength) + '...' 
-    : command;
+  const displayCommand =
+    command.length > maxCommandLength ? command.substring(0, maxCommandLength) + '...' : command;
 
   return {
     title: '🚀 Processing Claude Command',
@@ -706,7 +708,8 @@ export function createOperationStatusEmbed(
   _repository: string | undefined,
   success: boolean,
   duration?: number,
-  _fullPrompt?: string
+  _fullPrompt?: string,
+  sessionLinks?: SessionLinks
 ): DiscordEmbed {
   // Get the webhook URL from environment
   const webhookUrl = process.env.WEBHOOK_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
@@ -721,16 +724,25 @@ export function createOperationStatusEmbed(
     statusLine += ` • Duration: **${durationText}**`;
   }
 
+  // Build links section
+  let linksSection = `[📋 View Full Prompt](${promptUrl})`;
+  
+  if (sessionLinks) {
+    const formattedLinks = formatSessionLinksForDiscord(sessionLinks, operationId);
+    if (formattedLinks) {
+      linksSection = formattedLinks;
+    }
+  }
+  
   // Truncate command if too long (Discord embed description limit is 4096)
-  // Reserve space for the rest of the description (~200 chars for status + prompt link)
-  const maxCommandLength = 3800;
-  const displayCommand = command.length > maxCommandLength 
-    ? command.substring(0, maxCommandLength) + '...' 
-    : command;
+  // Reserve more space for the links section (~500 chars)
+  const maxCommandLength = 3500;
+  const displayCommand =
+    command.length > maxCommandLength ? command.substring(0, maxCommandLength) + '...' : command;
 
   return {
     title: success ? '✅ Command Completed' : '❌ Command Failed',
-    description: `${statusLine}\n\n**Command:**\n\`\`\`\n${displayCommand}\n\`\`\`\n\n[📋 View Full Prompt](${promptUrl})`,
+    description: `${statusLine}\n\n**Command:**\n\`\`\`\n${displayCommand}\n\`\`\`\n\n${linksSection}`,
     color: success ? 0x00ff00 : 0xff0000, // Green or Red
     timestamp: new Date().toISOString()
   };
