@@ -47,8 +47,7 @@ services:
       CLAUDE_CONTAINER_PULL_POLICY: "always"
       # Note: These paths need to be updated based on actual Docker volume names
       # Dokploy might prefix with project name
-      CLAUDE_AUTH_HOST_DIR: "/home/node/.claude"
-      HOST_SESSIONS_DIR: "/app/sessions"
+      # CLAUDE_AUTH_HOST_DIR and HOST_SESSIONS_DIR should be set in Dokploy env vars
       BASH_DEFAULT_TIMEOUT_MS: "600000"
       BASH_MAX_TIMEOUT_MS: "1200000"
       
