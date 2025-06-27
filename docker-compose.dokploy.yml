@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  webhook:
+    # Use pre-built image from GitHub Container Registry
+    image: ghcr.io/${GITHUB_REPOSITORY:-eugeneistrach/claude-hub}:latest
+    environment:
+      # Core Configuration
+      NODE_ENV: production
+      PORT: 3002
+      TRUST_PROXY: "true"
+      WEBHOOK_URL: ${WEBHOOK_URL:-https://claude.yourdomain.com}
+      
+      # Authentication
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      CLAUDE_API_SECRET: ${CLAUDE_API_SECRET}
+      
+      # Bot Configuration
+      BOT_USERNAME: ${BOT_USERNAME:-@ClaudeBot}
+      BOT_EMAIL: ${BOT_EMAIL:-claude@example.com}
+      AUTHORIZED_USERS: ${AUTHORIZED_USERS}
+      DEFAULT_GITHUB_OWNER: ${DEFAULT_GITHUB_OWNER}
+      DEFAULT_AUTHORIZED_USER: ${DEFAULT_AUTHORIZED_USER}
+      
+      # Claude Container Configuration
+      CLAUDE_USE_CONTAINERS: "1"
+      CLAUDE_CONTAINER_IMAGE: "claudecode:latest"
+      CLAUDE_AUTH_HOST_DIR: "/claude-auth"
+      BASH_DEFAULT_TIMEOUT_MS: "600000"
+      BASH_MAX_TIMEOUT_MS: "1200000"
+      
+      # Discord Integration (optional)
+      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_PUBLIC_KEY: ${DISCORD_PUBLIC_KEY}
+      DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
+      DISCORD_AUTHORIZED_USERS: ${DISCORD_AUTHORIZED_USERS}
+      
+      # Vercel (optional)
+      VERCEL_TOKEN: ${VERCEL_TOKEN}
+      
+      # PR Review Configuration
+      PR_REVIEW_WAIT_FOR_ALL_CHECKS: ${PR_REVIEW_WAIT_FOR_ALL_CHECKS:-true}
+      PR_REVIEW_TRIGGER_WORKFLOW: ${PR_REVIEW_TRIGGER_WORKFLOW}
+      PR_REVIEW_DEBOUNCE_MS: ${PR_REVIEW_DEBOUNCE_MS:-5000}
+      PR_REVIEW_MAX_WAIT_MS: ${PR_REVIEW_MAX_WAIT_MS:-1800000}
+      PR_REVIEW_CONDITIONAL_TIMEOUT_MS: ${PR_REVIEW_CONDITIONAL_TIMEOUT_MS:-300000}
+    volumes:
+      # Docker socket for container management
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent storage using Dokploy's files directory
+      - ../files/claude-auth:/claude-auth
+      - ../files/aws-credentials:/root/.aws:ro
+      - ../files/claude-config:/home/node/.claude
+    ports:
+      - "3002:3002"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      claudecode:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - dokploy-network
+    labels:
+      - "dokploy.enabled=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.claude-webhook.rule=Host(`claude.perfux.dev`)"
+      - "traefik.http.routers.claude-webhook.entrypoints=websecure"
+      - "traefik.http.routers.claude-webhook.tls.certResolver=letsencrypt"
+      - "traefik.http.services.claude-webhook.loadbalancer.server.port=3002"
+      - "traefik.http.routers.claude-webhook.service=claude-webhook"
+
+  claudecode:
+    # Use pre-built image from GitHub Container Registry
+    image: ghcr.io/${GITHUB_REPOSITORY:-eugeneistrach/claude-hub}-claudecode:latest
+    volumes:
+      # Read-only access to auth files
+      - ../files/claude-auth:/claude-auth:ro
+      - ../files/aws-credentials:/root/.aws:ro
+      - ../files/claude-config:/root/.claude
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    # Keep container running for webhook to use
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+    networks:
+      - dokploy-network
+    labels:
+      - "dokploy.enabled=true"
+
+networks:
+  dokploy-network:
+    external: true
