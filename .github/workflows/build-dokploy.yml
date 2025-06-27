@@ -22,6 +22,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - name: webhook
+            dockerfile: ./Dockerfile
+            image-suffix: ""
+          - name: claudecode
+            dockerfile: ./Dockerfile.claudecode
+            image-suffix: "-claudecode"
 
     steps:
     - name: Checkout repository
@@ -37,51 +46,26 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Extract metadata for webhook
-      id: meta-webhook
+    - name: Extract metadata
+      id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.image-suffix }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
           type=sha,prefix={{branch}}-
           type=raw,value=latest,enable={{is_default_branch}}
 
-    - name: Extract metadata for claudecode
-      id: meta-claudecode
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-claudecode
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-
-    - name: Build and push webhook image
+    - name: Build and push ${{ matrix.name }} image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ./Dockerfile
+        file: ${{ matrix.dockerfile }}
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ steps.meta-webhook.outputs.tags }}
-        labels: ${{ steps.meta-webhook.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          BUILDKIT_INLINE_CACHE=1
-
-    - name: Build and push claudecode image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./Dockerfile.claudecode
-        platforms: linux/amd64,linux/arm64
-        push: true
-        tags: ${{ steps.meta-claudecode.outputs.tags }}
-        labels: ${{ steps.meta-claudecode.outputs.labels }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         build-args: |
@@ -89,18 +73,9 @@ jobs:
 
     - name: Create deployment summary
       run: |
-        echo "## Deployment Images Built 🚀" >> $GITHUB_STEP_SUMMARY
+        echo "## ${{ matrix.name }} Image Built 🚀" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Webhook Image" >> $GITHUB_STEP_SUMMARY
+        echo "### Tags" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "${{ steps.meta-webhook.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### ClaudeCode Image" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "${{ steps.meta-claudecode.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-        echo "1. Update \`docker-compose.dokploy.yml\` with new image tags if needed" >> $GITHUB_STEP_SUMMARY
-        echo "2. Dokploy will automatically deploy the latest images" >> $GITHUB_STEP_SUMMARY
