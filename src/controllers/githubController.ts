@@ -246,7 +246,11 @@ Complete the auto-tagging task using only GitHub CLI commands.`;
 
     // With CLI-based approach, Claude handles the labeling directly
     // Check if the response indicates success or if we need fallback
-    if (!result.success || result.response?.includes('error') || result.response?.includes('failed')) {
+    if (
+      !result.success ||
+      result.response?.includes('error') ||
+      result.response?.includes('failed')
+    ) {
       logger.warn(
         {
           repo: repo.full_name,
@@ -293,7 +297,7 @@ Complete the auto-tagging task using only GitHub CLI commands.`;
         type: 'issues_opened'
       }
     };
-    
+
     return res.status(200).json(response);
   } catch (error) {
     const err = error as Error;
@@ -458,7 +462,7 @@ async function handlePullRequestComment(
             branch: pr.head.ref
           }
         };
-        
+
         return res.status(200).json(response);
       } catch (error) {
         return handleCommandError(error, { repo, issue: { number: pr.number }, command }, res);
@@ -641,7 +645,7 @@ async function processBotMention(
           type: 'issue_comment'
         }
       };
-      
+
       return res.status(200).json(response);
     } catch (error) {
       return handleCommandError(error, { repo, issue, command }, res);
@@ -765,9 +769,11 @@ async function handleManualPRReview(
           labelsToRemove: ['claude-review-in-progress']
         });
       } catch (labelError) {
-        logger.error('Failed to update labels after review failure', { error: (labelError as Error).message });
+        logger.error('Failed to update labels after review failure', {
+          error: (labelError as Error).message
+        });
       }
-      
+
       return res.status(500).json({
         success: false,
         error: 'PR review failed',
@@ -829,7 +835,7 @@ async function handleManualPRReview(
         branch: pr.head.ref
       }
     };
-    
+
     return res.status(200).json(response);
   } catch (error) {
     const err = error as Error;

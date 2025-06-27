@@ -726,14 +726,14 @@ export function createOperationStatusEmbed(
 
   // Build links section
   let linksSection = `[📋 View Full Prompt](${promptUrl})`;
-  
+
   if (sessionLinks) {
     const formattedLinks = formatSessionLinksForDiscord(sessionLinks, operationId);
     if (formattedLinks) {
       linksSection = formattedLinks;
     }
   }
-  
+
   // Truncate command if too long (Discord embed description limit is 4096)
   // Reserve more space for the links section (~500 chars)
   const maxCommandLength = 3500;

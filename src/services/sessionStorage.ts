@@ -41,7 +41,8 @@ class SessionStorage {
 
   constructor() {
     // Use the local sessions directory
-    this.sessionsDir = process.env.CLAUDE_SESSIONS_VOLUME_PATH ?? path.resolve(process.cwd(), 'sessions');
+    this.sessionsDir =
+      process.env.CLAUDE_SESSIONS_VOLUME_PATH ?? path.resolve(process.cwd(), 'sessions');
     this.retentionDays = parseInt(process.env.CLAUDE_SESSIONS_RETENTION_DAYS ?? '7', 10);
 
     // Ensure sessions directory exists

@@ -295,7 +295,10 @@ function handleApplicationCommand(
 
     // Process the command asynchronously - will edit the original interaction response
     processDiscordOperationAsync(sessionId, payload).catch(error => {
-      logger.error({ sessionId, operationId: sessionId, err: error }, 'Error in async Discord operation processing');
+      logger.error(
+        { sessionId, operationId: sessionId, err: error },
+        'Error in async Discord operation processing'
+      );
     });
 
     return res;
@@ -362,8 +365,12 @@ async function processDiscordOperationAsync(
     const duration = Date.now() - operation.startTime.getTime();
 
     if (!result.success) {
-      logger.error('Discord Claude command failed', { error: result.error, sessionId, operationId: sessionId });
-      
+      logger.error('Discord Claude command failed', {
+        error: result.error,
+        sessionId,
+        operationId: sessionId
+      });
+
       // Edit the original interaction response with error status
       await editInteractionResponse({
         applicationId: DISCORD_APPLICATION_ID ?? '',
@@ -380,21 +387,21 @@ async function processDiscordOperationAsync(
           )
         ]
       });
-      
+
       // Send error message
       await sendChannelMessage({
         channelId: operation.channelId,
         content: `❌ Error: ${result.error ?? 'Command execution failed'}`,
         operationId: operation.operationId
       });
-      
+
       return;
     }
 
     // Generate session links using sessionId
     const baseUrl = process.env.WEBHOOK_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
     const sessionLinks = generateSessionLinks(sessionId, baseUrl, result.sessionPath);
-    
+
     // Edit the original interaction response with simple completion status
     await editInteractionResponse({
       applicationId: DISCORD_APPLICATION_ID ?? '',

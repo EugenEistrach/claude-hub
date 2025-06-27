@@ -149,7 +149,7 @@ export async function executeCommand(req: Request, res: Response): Promise<void>
         timestamp: new Date().toISOString()
       }
     };
-    
+
     res.status(500).json(errorResponse);
   }
 }

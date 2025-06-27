@@ -73,7 +73,11 @@ Complete the auto-tagging task using only GitHub CLI commands.`;
       });
 
       // Check if Claude succeeded
-      if (!result.success || result.response?.includes('error') || result.response?.includes('failed')) {
+      if (
+        !result.success ||
+        result.response?.includes('error') ||
+        result.response?.includes('failed')
+      ) {
         logger.warn(
           {
             repo: repo.full_name,

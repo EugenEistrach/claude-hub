@@ -31,7 +31,6 @@ if (!BOT_USERNAME) {
 
 const execFileAsync = promisify(execFile);
 
-
 /**
  * Generate the prompt that would be sent to Claude (for debugging)
  */
@@ -246,22 +245,31 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
       const result = await execFileAsync('docker', dockerArgs, executionOptions);
 
       let responseText = result.stdout.trim();
-      
-      logger.info({ sessionId, hasSessionId: !!sessionId, dockerExited: true }, 'DOCKER EXECUTION COMPLETED');
-      
+
+      logger.info(
+        { sessionId, hasSessionId: !!sessionId, dockerExited: true },
+        'DOCKER EXECUTION COMPLETED'
+      );
+
       // With direct mounting to host sessions directory, no file copying needed
       if (sessionId) {
-        logger.info({ sessionId }, 'Claude container completed - trace files should be directly in host sessions directory');
-        
+        logger.info(
+          { sessionId },
+          'Claude container completed - trace files should be directly in host sessions directory'
+        );
+
         // Clean up the container
         try {
           execFileSync('docker', ['rm', containerName], { stdio: 'pipe' });
           logger.info({ sessionId, containerName }, 'Cleaned up claude container');
         } catch (e) {
-          logger.warn({ sessionId, containerName, error: (e as Error).message }, 'Failed to cleanup claude container');
+          logger.warn(
+            { sessionId, containerName, error: (e as Error).message },
+            'Failed to cleanup claude container'
+          );
         }
       }
-      
+
       // Save stderr to file for debugging (contains all our DEBUG output)
       if (result.stderr && sessionId) {
         const debugPath = `/app/sessions/${sessionId}/container-stderr.log`;
@@ -325,7 +333,7 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
 
       // Don't pass sessionPath since files are in Docker volume not accessible from host
       // The session storage service will handle checking file existence
-      
+
       return {
         success: true,
         sessionId,
@@ -676,7 +684,7 @@ function buildDockerArgs({
 
   // Mount the host sessions directory directly into claude container
   // This is the same directory that's mounted in the webhook container as /app/sessions
-  const hostSessionsDir = process.env.HOST_SESSIONS_DIR || '/tmp/sessions-fallback';
+  const hostSessionsDir = process.env.HOST_SESSIONS_DIR ?? '/tmp/sessions-fallback';
   dockerArgs.push('-v', `${hostSessionsDir}:/sessions`);
 
   // MCP configuration is now handled through template files
@@ -877,7 +885,7 @@ function handleDockerExecutionError(
       'Detailed error output from container'
     );
   }
-  
+
   logger.error(
     {
       error: err.message,
