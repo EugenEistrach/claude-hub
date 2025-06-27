@@ -17,6 +17,10 @@ set -e
 mkdir -p /workspace
 chown -R node:node /workspace
 
+# CRITICAL: Add node user to shared group for sessions access
+groupadd -g 2000 claudeshared 2>/dev/null || true
+usermod -aG claudeshared node
+
 # Set up Claude authentication by syncing from captured auth directory
 if [ -d "/home/node/.claude" ]; then
   echo "Setting up Claude authentication from mounted auth directory..." >&2

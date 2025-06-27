@@ -13,10 +13,18 @@ if [ -d "/uploads" ] && [ -f "/uploads/.credentials.json" ]; then
     echo "Credentials installed successfully"
 fi
 
-# Fix permissions for volumes
+# Fix permissions for volumes with PERMANENT solution
 echo "Fixing volume permissions..."
-chown -R claudeuser:claudeuser /app/sessions /home/node/.claude 2>/dev/null || true
-mkdir -p /app/sessions && chown claudeuser:claudeuser /app/sessions
+# Create a shared group for both containers
+groupadd -g 2000 claudeshared 2>/dev/null || true
+usermod -aG claudeshared claudeuser
+
+# Set up sessions directory with SGID bit
+mkdir -p /app/sessions
+chown -R claudeuser:claudeshared /app/sessions /home/node/.claude 2>/dev/null || true
+# CRITICAL: Set SGID bit so all new files inherit the group
+chmod -R 2775 /app/sessions
+chmod g+s /app/sessions
 
 # Fix docker socket access by updating docker group GID
 DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo "")
