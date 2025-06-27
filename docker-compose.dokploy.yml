@@ -74,6 +74,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    group_add:
+      - "988"
     networks:
       - dokploy-network
     labels:
