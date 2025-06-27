@@ -4,12 +4,23 @@ services:
   webhook:
     # Use pre-built image from GitHub Container Registry
     image: ghcr.io/${GITHUB_REPOSITORY:-eugeneistrach/claude-hub}:latest
+    ports:
+      - "3002"
+    volumes:
+      # Docker socket for running Claude containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # AWS credentials
+      - ../files/aws-credentials:/root/.aws:ro
+      # Claude authentication
+      - ../files/claude-config:/home/node/.claude
+      # Sessions directory for traces
+      - ../files/sessions:/app/sessions
     environment:
       # Core Configuration
       NODE_ENV: production
       PORT: 3002
       TRUST_PROXY: "true"
-      WEBHOOK_URL: ${WEBHOOK_URL:-https://claude.yourdomain.com}
+      WEBHOOK_URL: ${WEBHOOK_URL:-https://claude.perfux.dev}
       
       # Authentication
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -26,8 +37,9 @@ services:
       
       # Claude Container Configuration
       CLAUDE_USE_CONTAINERS: "1"
-      CLAUDE_CONTAINER_IMAGE: "claudecode:latest"
+      CLAUDE_CONTAINER_IMAGE: "ghcr.io/eugeneistrach/claude-hub-claudecode:latest"
       CLAUDE_AUTH_HOST_DIR: "/claude-auth"
+      HOST_SESSIONS_DIR: "/app/sessions"
       BASH_DEFAULT_TIMEOUT_MS: "600000"
       BASH_MAX_TIMEOUT_MS: "1200000"
       
@@ -38,7 +50,7 @@ services:
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
       DISCORD_AUTHORIZED_USERS: ${DISCORD_AUTHORIZED_USERS}
       
-      # Vercel (optional)
+      # Vercel Integration
       VERCEL_TOKEN: ${VERCEL_TOKEN}
       
       # PR Review Configuration
@@ -47,25 +59,21 @@ services:
       PR_REVIEW_DEBOUNCE_MS: ${PR_REVIEW_DEBOUNCE_MS:-5000}
       PR_REVIEW_MAX_WAIT_MS: ${PR_REVIEW_MAX_WAIT_MS:-1800000}
       PR_REVIEW_CONDITIONAL_TIMEOUT_MS: ${PR_REVIEW_CONDITIONAL_TIMEOUT_MS:-300000}
-    volumes:
-      # Docker socket for container management
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Persistent storage using Dokploy's files directory
-      - ../files/claude-auth:/claude-auth
-      - ../files/aws-credentials:/root/.aws:ro
-      - ../files/claude-config:/home/node/.claude
-    ports:
-      - "3002:3002"
+      
+      # Claude Trace
+      ENABLE_CLAUDE_TRACE: ${ENABLE_CLAUDE_TRACE:-true}
+      CLAUDE_SESSIONS_RETENTION_DAYS: ${CLAUDE_SESSIONS_RETENTION_DAYS:-7}
+      CLAUDE_SESSIONS_VOLUME_PATH: /app/sessions
+      
+      # Logging
+      DISABLE_LOG_REDACTION: ${DISABLE_LOG_REDACTION:-false}
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    depends_on:
-      claudecode:
-        condition: service_started
-    restart: unless-stopped
     networks:
       - dokploy-network
     labels:
@@ -76,24 +84,6 @@ services:
       - "traefik.http.routers.claude-webhook.tls.certResolver=letsencrypt"
       - "traefik.http.services.claude-webhook.loadbalancer.server.port=3002"
       - "traefik.http.routers.claude-webhook.service=claude-webhook"
-
-  claudecode:
-    # Use pre-built image from GitHub Container Registry
-    image: ghcr.io/${GITHUB_REPOSITORY:-eugeneistrach/claude-hub}-claudecode:latest
-    volumes:
-      # Read-only access to auth files
-      - ../files/claude-auth:/claude-auth:ro
-      - ../files/aws-credentials:/root/.aws:ro
-      - ../files/claude-config:/root/.claude
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    # Keep container running for webhook to use
-    command: ["sleep", "infinity"]
-    restart: unless-stopped
-    networks:
-      - dokploy-network
-    labels:
-      - "dokploy.enabled=true"
 
 networks:
   dokploy-network:
