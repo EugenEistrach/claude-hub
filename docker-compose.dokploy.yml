@@ -78,6 +78,10 @@ services:
       - dokploy-network
     labels:
       - "dokploy.enabled=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.webhook.rule=Host(`claude.perfux.dev`)"
+      - "traefik.http.routers.webhook.entrypoints=websecure"
+      - "traefik.http.services.webhook.loadbalancer.server.port=3002"
 
 networks:
   dokploy-network:
