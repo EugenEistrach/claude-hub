@@ -47,7 +47,8 @@ services:
       CLAUDE_CONTAINER_PULL_POLICY: "always"
       # Note: These paths need to be updated based on actual Docker volume names
       # Dokploy might prefix with project name
-      # CLAUDE_AUTH_HOST_DIR and HOST_SESSIONS_DIR should be set in Dokploy env vars
+      CLAUDE_AUTH_HOST_DIR: ${CLAUDE_AUTH_HOST_DIR}
+      HOST_SESSIONS_DIR: ${HOST_SESSIONS_DIR}
       BASH_DEFAULT_TIMEOUT_MS: "600000"
       BASH_MAX_TIMEOUT_MS: "1200000"
       
@@ -71,7 +72,7 @@ services:
       # Claude Trace
       ENABLE_CLAUDE_TRACE: ${ENABLE_CLAUDE_TRACE:-true}
       CLAUDE_SESSIONS_RETENTION_DAYS: ${CLAUDE_SESSIONS_RETENTION_DAYS:-7}
-      CLAUDE_SESSIONS_VOLUME_PATH: /app/sessions
+      CLAUDE_SESSIONS_VOLUME_PATH: ${CLAUDE_SESSIONS_VOLUME_PATH}
       
       # Logging
       DISABLE_LOG_REDACTION: ${DISABLE_LOG_REDACTION:-false}
