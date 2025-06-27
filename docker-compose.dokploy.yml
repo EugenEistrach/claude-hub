@@ -9,6 +9,7 @@ services:
   webhook:
     # Use pre-built image from GitHub Container Registry
     image: ghcr.io/${GITHUB_REPOSITORY:-eugeneistrach/claude-hub}:latest
+    pull_policy: always
     ports:
       - "3002"
     volumes:
@@ -43,6 +44,7 @@ services:
       # Claude Container Configuration
       CLAUDE_USE_CONTAINERS: "1"
       CLAUDE_CONTAINER_IMAGE: "ghcr.io/eugeneistrach/claude-hub-claudecode:latest"
+      CLAUDE_CONTAINER_PULL_POLICY: "always"
       # Note: These paths need to be updated based on actual Docker volume names
       # Dokploy might prefix with project name
       CLAUDE_AUTH_HOST_DIR: "/home/node/.claude"

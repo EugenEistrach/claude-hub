@@ -148,6 +148,19 @@ For real functionality, please configure valid GitHub and Claude API tokens.`;
 
     // Build Docker image if it doesn't exist
     const dockerImageName = process.env['CLAUDE_CONTAINER_IMAGE'] ?? 'claudecode:latest';
+    const pullPolicy = process.env['CLAUDE_CONTAINER_PULL_POLICY'];
+    
+    // Always pull if policy is set to 'always'
+    if (pullPolicy === 'always') {
+      logger.info({ dockerImageName }, 'Pull policy is "always", pulling latest image');
+      try {
+        execFileSync('docker', ['pull', dockerImageName], { stdio: 'pipe' });
+        logger.info({ dockerImageName }, 'Successfully pulled latest image');
+      } catch (error) {
+        logger.warn({ dockerImageName, error: (error as Error).message }, 'Failed to pull image, will try to use local');
+      }
+    }
+    
     try {
       execFileSync('docker', ['inspect', dockerImageName], { stdio: 'ignore' });
       logger.info({ dockerImageName }, 'Docker image already exists');
