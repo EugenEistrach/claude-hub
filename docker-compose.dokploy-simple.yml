@@ -2,8 +2,10 @@ version: '3.8'
 
 services:
   webhook:
-    # Use pre-built image from GitHub Container Registry
-    image: ghcr.io/eugeneistrach/claude-hub:latest
+    # Build from source
+    build:
+      context: .
+      dockerfile: Dockerfile
     environment:
       # Core Configuration
       NODE_ENV: production
