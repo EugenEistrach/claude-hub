@@ -1,5 +1,10 @@
 version: '3.8'
 
+volumes:
+  claude-sessions:
+  claude-config:
+  claude-aws:
+
 services:
   webhook:
     # Use pre-built image from GitHub Container Registry
@@ -9,12 +14,12 @@ services:
     volumes:
       # Docker socket for running Claude containers
       - /var/run/docker.sock:/var/run/docker.sock
-      # AWS credentials
-      - ../files/aws-credentials:/root/.aws:ro
-      # Claude authentication
-      - ../files/claude-config:/home/node/.claude
-      # Sessions directory for traces
-      - ../files/sessions:/app/sessions
+      # Docker volumes instead of bind mounts
+      - claude-aws:/root/.aws
+      - claude-config:/home/node/.claude
+      - claude-sessions:/app/sessions
+      # Upload directory for credentials
+      - /home/eugeneistrach/claude-uploads:/uploads:ro
     environment:
       # Core Configuration
       NODE_ENV: production
@@ -38,7 +43,9 @@ services:
       # Claude Container Configuration
       CLAUDE_USE_CONTAINERS: "1"
       CLAUDE_CONTAINER_IMAGE: "ghcr.io/eugeneistrach/claude-hub-claudecode:latest"
-      CLAUDE_AUTH_HOST_DIR: "/claude-auth"
+      # Note: These paths need to be updated based on actual Docker volume names
+      # Dokploy might prefix with project name
+      CLAUDE_AUTH_HOST_DIR: "/home/node/.claude"
       HOST_SESSIONS_DIR: "/app/sessions"
       BASH_DEFAULT_TIMEOUT_MS: "600000"
       BASH_MAX_TIMEOUT_MS: "1200000"
@@ -74,8 +81,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    group_add:
-      - "988"
     networks:
       - dokploy-network
     labels:

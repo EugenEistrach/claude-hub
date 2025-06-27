@@ -142,9 +142,8 @@ ENV NODE_ENV=production \
     NPM_CONFIG_PREFIX=/home/claudeuser/.npm-global \
     PATH=/home/claudeuser/.npm-global/bin:$PATH
 
-# Switch to non-root user for running the application
-# Docker commands will work via docker group membership when socket is mounted
-USER claudeuser
+# Don't switch user here - startup script will handle it
+# USER claudeuser
 
-# Run the startup script
+# Run the startup script as root (it will drop privileges)
 CMD ["bash", "/app/scripts/runtime/startup.sh"]

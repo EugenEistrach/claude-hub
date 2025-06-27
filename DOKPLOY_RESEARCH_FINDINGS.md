@@ -63,3 +63,9 @@ Since we configured the domain through Dokploy API (`POST /api/domain.create`), 
 
 ### Hypothesis to Test
 Removed all Traefik labels except `dokploy.enabled=true` since we configured domain via API. Dokploy might auto-generate the needed Traefik configuration.
+
+### Test Result
+Still getting 404 after removing labels. This suggests:
+1. Dokploy API domain configuration alone isn't enough
+2. Manual Traefik labels are still required in compose file
+3. Need to find the correct UNIQUE-RULE identifier format
