@@ -48,4 +48,5 @@ fi
 
 # Drop privileges and start the webhook service as claudeuser
 echo "Dropping privileges and starting webhook service as claudeuser..."
-exec su - claudeuser -c "cd /app && node dist/index.js"
+# Use runuser to preserve environment variables
+exec runuser -u claudeuser -- bash -c "cd /app && node dist/index.js"
